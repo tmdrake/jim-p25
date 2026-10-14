@@ -10,7 +10,7 @@ These pictures are the empty form. A frequency you type is saved on this compute
 
 ![jim-p25 controls and listening waterfall](docs/panel.png)
 
-Listen, push-to-talk, and Stop sit with the channel fields. The waterfall stays quiet until Listen is on. The white line is the channel. The red line is the tuner, 50 kHz higher.
+Listen, push-to-talk, and Stop sit with the channel fields. The status card is next, then the waterfall. The waterfall stays quiet until Listen is on. The white line is the channel. The red line is the tuner, 50 kHz higher.
 
 ![Help for the NAC, the gains, and a silent radio](docs/help.png)
 

@@ -95,6 +95,7 @@
       background: var(--card);
       border: 1px solid var(--line);
     }
+    #status.rx { border-color: var(--listen); }
     #status.tx { border-color: var(--tx); }
     #err { color: var(--bad); min-height: 1.4rem; }
     .help {
@@ -163,6 +164,7 @@
       </div>
       <p class="actionhelp">Listen plays clear voice in this browser. Click it again to stop. Push to talk stops listening and sends the test tone. Release it and listening returns. Stop goes idle and frees the HackRF.</p>
     </form>
+    <div id="status">Checking the HackRF…</div>
     <figure id="waterfall">
       <canvas id="wf" width="512" height="160"></canvas>
       <figcaption id="wfcap">White line: the frequency on this page. Red line: the HackRF tuner, 50 kHz higher, where the DC spike sits while listening. A Phase 1 signal is about 12.5 kHz wide, so it is a thin trace on the white line. The trace runs only while listening.</figcaption>
@@ -189,7 +191,6 @@
         <li>If the light is on and the speaker is quiet at transmit IF gain 0, try 32 with the radios close together.</li>
       </ul>
     </section>
-    <div id="status">Checking the HackRF…</div>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
@@ -235,11 +236,11 @@
 
     function paint(status) {
       const box = $("status");
-      box.className = status.mode === "tx" ? "tx" : "";
+      box.className = status.mode === "tx" ? "tx" : status.mode === "listen" ? "rx" : "";
       const device = {
         ready: "HackRF ready",
         missing: "HackRF not seen by Ubuntu. Start this page from Start-P25.ps1 so the USB device is attached.",
-        busy: "HackRF in use"
+        busy: status.mode === "tx" ? "HackRF transmitting" : "HackRF receiving"
       }[status.device] || status.device;
       const lines = [device, status.message || "Idle"];
       if (status.mode === "listen") {
