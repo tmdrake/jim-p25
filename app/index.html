@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jim-p25</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --listen: #1f6b4a;
+      --tx: #9a3412;
+      --bad: #9f1239;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 18px/1.4 "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 1.25rem;
+    }
+    h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+    p { margin: 0.4rem 0; }
+    .warn {
+      background: #fff4e5;
+      border: 1px solid #e7c48a;
+      padding: 0.75rem 0.9rem;
+      margin: 1rem 0;
+    }
+    form {
+      display: grid;
+      gap: 0.8rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      padding: 1rem;
+    }
+    label { display: grid; gap: 0.25rem; font-weight: 600; }
+    label span { font-weight: 400; color: var(--muted); }
+    input {
+      font: inherit;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--line);
+      background: white;
+      width: 100%;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+    button {
+      font: inherit;
+      padding: 0.7rem 1rem;
+      border: 0;
+      color: white;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: default; }
+    #listen { background: var(--listen); }
+    #ptt { background: var(--tx); min-width: 11rem; }
+    #stop { background: #44403c; }
+    #status {
+      margin-top: 1rem;
+      padding: 0.8rem 0.9rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+    }
+    #status.tx { border-color: var(--tx); }
+    #err { color: var(--bad); min-height: 1.4rem; }
+    footer { color: var(--muted); margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>jim-p25</h1>
+    <p>P25 Phase 1 simplex. One frequency. Listen, or send the 1011 Hz test tone.</p>
+    <div class="warn">
+      The HackRF transmits only while push-to-talk is held, for at most 30 seconds,
+      at RF gain 0. Use a frequency you are allowed to transmit on. Keep the radios
+      close together, or put a dummy load on the HackRF.
+    </div>
+    <form id="controls">
+      <label>Frequency MHz
+        <input id="frequency" inputmode="decimal" autocomplete="off" placeholder="empty until you set it">
+      </label>
+      <div class="row">
+        <label>NAC hex
+          <span>12-bit, for example 293</span>
+          <input id="nac" autocomplete="off" placeholder="0x000" maxlength="6">
+        </label>
+        <label>Talkgroup
+          <input id="tgid" inputmode="numeric" placeholder="1">
+        </label>
+      </div>
+      <div class="row">
+        <label>Source ID
+          <input id="src" inputmode="numeric" placeholder="1">
+        </label>
+        <label>PPM
+          <input id="ppm" inputmode="numeric" value="0">
+        </label>
+      </div>
+      <div class="row">
+        <label>Listen gain
+          <span>HackRF IF, snapped to 0–40</span>
+          <input id="rx_gain" inputmode="numeric" value="16">
+        </label>
+        <label>Transmit IF gain
+          <span>RF amp stays off</span>
+          <input id="tx_if_gain" inputmode="numeric" value="16">
+        </label>
+      </div>
+      <p id="err"></p>
+      <div class="actions">
+        <button type="button" id="listen">Listen</button>
+        <button type="button" id="ptt">Push to talk</button>
+        <button type="button" id="stop">Stop</button>
+      </div>
+    </form>
+    <div id="status">Checking the HackRF…</div>
+    <footer>
+      Clear voice only (algorithm 80 hex). Phase 2, trunking, and encryption keys are not in this page.
+      Push-to-talk sends the standard 1011 Hz tone so the NAC, talkgroup, and source ID above are the ones on the air.
+      OP25’s live microphone coder does not take a NAC, so this page does not use the mic.
+    </footer>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fields = ["frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain"];
+
+    function payload() {
+      const body = {};
+      for (const id of fields) body[id] = $(id).value;
+      return body;
+    }
+
+    function showError(text) {
+      $("err").textContent = text || "";
+    }
+
+    async function post(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    function paint(status) {
+      const box = $("status");
+      box.className = status.mode === "tx" ? "tx" : "";
+      const device = {
+        ready: "HackRF ready",
+        missing: "HackRF not seen by Ubuntu. Start this page from Start-P25.ps1 so the USB device is attached.",
+        busy: "HackRF in use"
+      }[status.device] || status.device;
+      const lines = [device, status.message || "Idle"];
+      if (status.mode === "listen") {
+        lines.push("Decoded NAC: " + (status.nac_decoded || "none yet"));
+        lines.push("Talkgroup: " + (status.talkgroup || "none yet"));
+      }
+      if (status.mode === "tx") lines.push("On the air. Release push-to-talk to stop.");
+      box.textContent = lines.join("\n");
+      $("listen").disabled = status.mode === "tx";
+      $("listen").textContent = status.mode === "listen" ? "Listening" : "Listen";
+    }
+
+    async function refresh() {
+      try {
+        const status = await (await fetch("/api/status")).json();
+        paint(status);
+      } catch (err) {
+        $("status").textContent = "Page lost the radio process.";
+      }
+    }
+
+    $("listen").addEventListener("click", async () => {
+      showError("");
+      try {
+        const status = await (await fetch("/api/status")).json();
+        if (status.mode === "listen") {
+          paint(await post("/api/stop"));
+          return;
+        }
+        paint(await post("/api/listen", payload()));
+      } catch (err) {
+        showError(err.message);
+      }
+    });
+
+    let holding = false;
+    async function beginTx(event) {
+      event.preventDefault();
+      if (holding) return;
+      holding = true;
+      showError("");
+      try {
+        paint(await post("/api/tx", payload()));
+      } catch (err) {
+        holding = false;
+        showError(err.message);
+      }
+    }
+    async function endTx() {
+      if (!holding) return;
+      holding = false;
+      try {
+        paint(await post("/api/release"));
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+    const ptt = $("ptt");
+    ptt.addEventListener("pointerdown", beginTx);
+    ptt.addEventListener("pointerup", endTx);
+    ptt.addEventListener("pointercancel", endTx);
+    ptt.addEventListener("pointerleave", endTx);
+
+    $("stop").addEventListener("click", async () => {
+      holding = false;
+      showError("");
+      try {
+        paint(await post("/api/stop"));
+      } catch (err) {
+        showError(err.message);
+      }
+    });
+
+    const statusBox = $("status");
+    statusBox.style.whiteSpace = "pre-line";
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>
