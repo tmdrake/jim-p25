@@ -2,7 +2,7 @@
 
 P25 Phase 1 conventional simplex tester for a HackRF One and a Motorola radio you are allowed to test.
 
-The page runs in Ubuntu on WSL2 and opens in the Windows browser. You set one frequency and the P25 network access code (NAC). Listen plays decoded clear voice in the browser. Push-to-talk sends the standard 1011 Hz Phase 1 test tone with that NAC, talkgroup, and source ID.
+The page runs in Ubuntu on WSL2 and opens in the Windows browser. You set one frequency and the P25 network access code (NAC). Transmit latches the standard 1011 Hz Phase 1 test tone with that NAC, talkgroup, and source ID. Stop turns the tone off.
 
 ## The page
 
@@ -10,7 +10,7 @@ These pictures are the empty form. A frequency you type is saved on this compute
 
 ![jim-p25 controls and listening waterfall](docs/panel.png)
 
-Listen, push-to-talk, and Stop sit with the channel fields. The status card is next, then the waterfall. The waterfall stays quiet until Listen is on. The white line is the channel. The red line is the tuner, 50 kHz higher.
+Transmit and Stop sit under the channel fields. The status card is next, then the waterfall. Receive is not a button on this page, so the waterfall stays quiet. The white line is the channel. The red line is the tuner, 50 kHz higher.
 
 ![Help for the NAC, the gains, and a silent radio](docs/help.png)
 
@@ -24,7 +24,7 @@ In scope:
 - A small page: frequency, NAC, talkgroup, source ID, clock correction (PPM), listen gain, and transmit IF gain.
 - Clear voice only. The algorithm ID is fixed at `0x80`. There is no key field.
 - Push-to-talk audio is the 1011 Hz IMBE test tone, so the NAC and IDs on the page are the ones in the frames. OP25’s live microphone coder hardcodes a NAC, so this page does not use the mic.
-- Half duplex. The HackRF listens or transmits, never both. Transmit runs only while the button is held, and it stops after 30 seconds. RF gain stays at 0.
+- Half duplex. The HackRF listens or transmits, never both. The page buttons are Transmit and Stop. Transmit latches the test tone until Stop. RF gain stays at 0.
 - A listening waterfall, 2 MHz wide, centered on the channel. The white line is the channel. The red line is the HackRF local oscillator, 50 kHz higher.
 
 Out of scope:
@@ -33,6 +33,7 @@ Out of scope:
 - Encryption, decryption, and keys.
 - Inhibit, radio-check, and other radio-disable messages.
 - Firmware flashing.
+- NXDN. This OP25 build can encode P25, DMR, D-Star, and Yaesu System Fusion. The page sends only the P25 test tone. There is no NXDN encoder in the build.
 
 Use a frequency you are allowed to transmit on. Keep the radios close together, or put a dummy load on the HackRF.
 
@@ -61,7 +62,7 @@ From this folder in PowerShell:
 
 On the page, enter the frequency in MHz and the NAC in hex (`293` and `0x293` are the same). An empty talkgroup or source ID becomes 1. PPM is the HackRF clock correction in parts per million. Leave it at 0 unless the radio is slightly off the channel. At 446 MHz, 1 PPM is about 446 Hz.
 
-Click Listen and leave the tab open. The browser plays the voice. Hold Push to talk for a few seconds after the status says transmitting. GNU Radio spends a few seconds starting, then the tone repeats until you release the button. Stop returns to idle.
+The buttons are Transmit and Stop. Transmit latches the test tone on, and letting go does not stop it. Stop turns it off. GNU Radio spends a few seconds starting.
 
 The page stores frequency, NAC, talkgroup, source ID, PPM, and both gains in `local/settings.json` as you type, and fills them back in when you open it. Listen and transmit also write the channel files under `local/`. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
 
@@ -155,9 +156,9 @@ Encrypted frames stay silent. A NAC of `F7E` or `F7F` on the page accepts any re
 
 ### Transmit
 
-Push-to-talk stops listen, builds a symbol file, and starts `dv_tx.py`. Release stops transmit and, if listen was on, starts listen again.
+Transmit builds a symbol file and starts `dv_tx.py`. The tone repeats until Stop. Stop returns the HackRF to idle. There is no time limit.
 
-`p25craft.py` writes the clear group call: NAC, talkgroup, and source ID from the page, destination unused for a group call, algorithm `0x80`, key ID 0, manufacturer ID 0, link-control opcode 0. The voice codeword is the TIA 1011 Hz test vector. `unpack.py` turns that into dibits 0–3. `dv_tx.py` C4FM-modulates the file at 2 Msps, repeats it until release, and sends it to the HackRF with extra USB buffers. The first moments can print `U`, which is one buffer of silence. The tone follows.
+`p25craft.py` writes the clear group call: NAC, talkgroup, and source ID from the page, destination unused for a group call, algorithm `0x80`, key ID 0, manufacturer ID 0, link-control opcode 0. The voice codeword is the TIA 1011 Hz test vector. `unpack.py` turns that into dibits 0–3. `dv_tx.py` C4FM-modulates the file at 2 Msps, repeats it until Stop, and sends it to the HackRF with extra USB buffers. The first moments can print `U`, which is one buffer of silence. The tone follows.
 
 ```mermaid
 flowchart LR

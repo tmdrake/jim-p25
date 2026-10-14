@@ -68,10 +68,14 @@
       color: white;
       cursor: pointer;
     }
-    button:disabled { opacity: 0.55; cursor: default; }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .actions button { min-width: 8.75rem; }
     #listen { background: var(--listen); }
-    #ptt { background: var(--tx); min-width: 11rem; }
+    #listen.on { box-shadow: inset 0 0 0 3px #d1fae5; }
+    #ptt { background: var(--tx); }
+    #ptt.on { box-shadow: inset 0 0 0 3px #ffedd5; cursor: default; }
     #stop { background: #57534e; }
+    #stop.needed { background: #b91c1c; }
     #waterfall {
       margin: 1rem 0 0;
       background: #12110f;
@@ -115,9 +119,9 @@
 <body>
   <main>
     <h1>jim-p25</h1>
-    <p>P25 Phase 1 conventional simplex. One C4FM channel, half duplex. Listen in this browser, or send the 1011 Hz test tone. These fields stay on this computer.</p>
+    <p>P25 Phase 1 conventional simplex. One C4FM channel. Transmit sends the 1011 Hz test tone. These fields stay on this computer.</p>
     <div class="warn">
-      The HackRF transmits only while push-to-talk is held, and it stops at 30 seconds.
+      Transmit turns the test tone on and leaves it on. Stop turns it off.
       The RF amplifier stays off. Use a frequency you are allowed to transmit on.
       Keep the radios close together, or put a dummy load on the HackRF.
     </div>
@@ -158,11 +162,10 @@
       </div>
       <p id="err"></p>
       <div class="actions">
-        <button type="button" id="listen">Listen</button>
-        <button type="button" id="ptt">Push to talk</button>
+        <button type="button" id="ptt" aria-pressed="false">Transmit</button>
         <button type="button" id="stop">Stop</button>
       </div>
-      <p class="actionhelp">Listen plays clear voice in this browser. Click it again to stop. Push to talk stops listening and sends the test tone. Release it and listening returns. Stop goes idle and frees the HackRF.</p>
+      <p id="actionhelp" class="actionhelp">Transmit turns the test tone on and leaves it on. Stop turns it off.</p>
     </form>
     <div id="status">Checking the HackRF…</div>
     <figure id="waterfall">
@@ -173,13 +176,14 @@
       <h2>Help</h2>
       <h3>Channel</h3>
       <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
-      <h3>Listen</h3>
-      <p>Listen opens the HackRF at 2 million samples per second and runs the CQPSK demodulator this build uses for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio, and this tab plays it. Leave the tab open.</p>
+      <h3>Receive</h3>
+      <p>Receive is not a button on this page. The buttons are Transmit and Stop, so the waterfall stays quiet.</p>
+      <p>The receiver is still in the program. When it runs, it opens the HackRF at 2 million samples per second and uses the CQPSK demodulator for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio for this browser.</p>
       <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
       <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The status line shows the NAC and talkgroup taken from decoded voice frames. A simplex channel sends no trunking control messages, so a control-channel timeout in the log is normal.</p>
       <h3>Transmit</h3>
-      <p>Push to talk sends the standard 1011 Hz Phase 1 test tone. That tone is an IMBE codeword, repeated until you release the button. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused. The HackRF is half duplex, so listening stops before the tone goes out, and release returns to listen.</p>
-      <p>GNU Radio takes a few seconds to start. Keep holding after the status says transmitting. The tone then runs until you release, or until the 30 second limit. During transmit the local oscillator is on the channel, so the DC spike is on the carrier. The waterfall pauses because the receiver is stopped.</p>
+      <p>Transmit sends the standard 1011 Hz Phase 1 test tone and leaves it on. Letting go does not stop it. Stop is the off switch. The tone is an IMBE codeword, repeated until then. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused.</p>
+      <p>GNU Radio takes a few seconds to start. The tone begins after the status says transmitting, and it stays until Stop. During transmit the local oscillator is on the channel, so the DC spike is on the carrier.</p>
       <p>Transmit IF gain is an amplifier step, from 0 to 40 dB in steps of 8. The RF amplifier, about 11 dB, stays off. HackRF has no calibrated dBm control. With the RF amplifier off, 0 and 16 are below 0 dBm (1 milliwatt). A setting near 40 can land around 0 dBm, and the real level still changes with frequency. The board’s maximum from 10 MHz to 2170 MHz is about 5 to 15 dBm, which takes the RF amplifier on and IF gain at 47. This panel never does that. On the bench, use 0 or 16, with the radios close or a dummy load fitted.</p>
       <h3>The other radio lights and stays quiet</h3>
       <ul>
@@ -247,10 +251,15 @@
         lines.push("Decoded NAC: " + (status.nac_decoded || "none yet"));
         lines.push("Talkgroup: " + (status.talkgroup || "none yet"));
       }
-      if (status.mode === "tx") lines.push("On the air. Release push-to-talk to stop.");
+      if (status.mode === "tx") lines.push("Test tone is on. Press Stop.");
       box.textContent = lines.join("\n");
-      $("listen").disabled = status.mode === "tx";
-      $("listen").textContent = status.mode === "listen" ? "Listening" : "Listen";
+      const mode = status.mode || "idle";
+      radioMode = mode;
+      const tone = $("ptt");
+      const stop = $("stop");
+      tone.classList.toggle("on", mode === "tx");
+      tone.setAttribute("aria-pressed", mode === "tx" ? "true" : "false");
+      stop.classList.toggle("needed", mode === "tx");
     }
 
     let audioCtx = null;
@@ -372,7 +381,6 @@
       try {
         const status = await (await fetch("/api/status")).json();
         paint(status);
-        if (status.mode === "listen" && audioCtx) pumpAudio();
       } catch (err) {
         $("status").textContent = "Page lost the radio process.";
       }
@@ -381,52 +389,22 @@
     for (const id of fields) $(id).addEventListener("input", remember);
     $("controls").addEventListener("submit", (event) => event.preventDefault());
 
-    $("listen").addEventListener("click", async () => {
-      showError("");
-      try {
-        const status = await (await fetch("/api/status")).json();
-        if (status.mode === "listen") {
-          paint(await post("/api/stop"));
-          return;
-        }
-        ensureAudio();
-        paint(await post("/api/listen", payload()));
-        pumpAudio();
-      } catch (err) {
-        showError(err.message);
-      }
-    });
-
-    let holding = false;
-    async function beginTx(event) {
-      event.preventDefault();
-      if (holding) return;
-      holding = true;
+    let radioMode = "idle";
+    let arming = false;
+    $("ptt").addEventListener("click", async () => {
+      if (arming || radioMode === "tx") return;
+      arming = true;
       showError("");
       try {
         paint(await post("/api/tx", payload()));
       } catch (err) {
-        holding = false;
         showError(err.message);
+      } finally {
+        arming = false;
       }
-    }
-    async function endTx() {
-      if (!holding) return;
-      holding = false;
-      try {
-        paint(await post("/api/release"));
-      } catch (err) {
-        showError(err.message);
-      }
-    }
-    const ptt = $("ptt");
-    ptt.addEventListener("pointerdown", beginTx);
-    ptt.addEventListener("pointerup", endTx);
-    ptt.addEventListener("pointercancel", endTx);
-    ptt.addEventListener("pointerleave", endTx);
+    });
 
     $("stop").addEventListener("click", async () => {
-      holding = false;
       showError("");
       try {
         paint(await post("/api/stop"));

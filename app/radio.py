@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from settings import TX_LIMIT_S, TX_SUPERFRAMES, SettingsError
+from settings import TX_SUPERFRAMES, SettingsError
 
 OP25_APPS = Path(os.environ.get("OP25_APPS", "/root/op25/op25/gr-op25_repeater/apps"))
 REPO = Path(__file__).resolve().parent.parent
@@ -393,7 +393,6 @@ class Radio:
             "nac_decoded": nac,
             "talkgroup": tg,
             "channel": view,
-            "tx_limit_s": TX_LIMIT_S,
         }
 
     def take_pcm(self) -> bytes:
@@ -557,34 +556,10 @@ class Radio:
             self._resume_listen = resume
             self._message = (
                 f"Transmitting test tone on {channel['frequency_mhz']} MHz. "
-                "Hold for a few seconds."
+                "Press Stop to end it."
             )
-            timer = threading.Timer(TX_LIMIT_S, self._tx_expired)
-            timer.daemon = True
-            self._timer = timer
             log.close()
-        timer.start()
         return {"ok": True, "nac_hex": channel["nac_hex"], "algid": channel["algid"]}
-
-    def _tx_expired(self) -> None:
-        with self._lock:
-            if self._mode != "tx":
-                return
-            proc = self._proc
-            self._proc = None
-            resume = self._resume_listen
-            channel = self._channel
-            self._mode = "idle"
-            self._resume_listen = False
-            self._timer = None
-            self._message = "Transmit stopped at the 30 second limit"
-        _stop_process(proc)
-        if resume and channel:
-            time.sleep(0.5)
-            try:
-                self.listen(channel)
-            except SettingsError:
-                pass
 
     def release(self) -> None:
         with self._lock:

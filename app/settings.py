@@ -8,7 +8,6 @@ from pathlib import Path
 HACKRF_IF_GAINS = (0, 8, 16, 24, 32, 40)
 CLEAR_ALGID = 0x80
 TX_SUPERFRAMES = 70
-TX_LIMIT_S = 30
 FORM_FIELDS = ("frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain")
 
 
