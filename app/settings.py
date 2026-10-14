@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 HACKRF_IF_GAINS = (0, 8, 16, 24, 32, 40)
 CLEAR_ALGID = 0x80
 TX_SUPERFRAMES = 70
 TX_LIMIT_S = 30
+FORM_FIELDS = ("frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain")
 
 
 class SettingsError(ValueError):
@@ -73,6 +77,46 @@ def parse_ppm(text) -> int:
     if value < -200 or value > 200:
         raise SettingsError("PPM must be between -200 and 200.")
     return value
+
+
+def form_from_json(data: dict) -> dict:
+    """Keep the typed fields. Do not require a valid channel."""
+    if not isinstance(data, dict):
+        raise SettingsError("Expected a JSON object.")
+    form = {}
+    for key in FORM_FIELDS:
+        raw = data.get(key, "")
+        if raw is None:
+            text = ""
+        elif isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            raise SettingsError("Settings must be text.")
+        else:
+            text = str(raw).strip()
+        if len(text) > 32 or any(ord(ch) < 32 for ch in text):
+            raise SettingsError("A setting is too long.")
+        form[key] = text
+    return form
+
+
+def load_form(path: Path) -> dict:
+    if not path.is_file():
+        return {"saved": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        form = form_from_json(data)
+    except (OSError, json.JSONDecodeError, SettingsError):
+        return {"saved": False}
+    form["saved"] = True
+    return form
+
+
+def save_form(path: Path, data: dict) -> dict:
+    form = form_from_json(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(form, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return {**form, "saved": True}
 
 
 def channel_from_json(data: dict) -> dict:

@@ -6,15 +6,16 @@
   <title>jim-p25</title>
   <style>
     :root {
-      color-scheme: light;
-      --ink: #1c1915;
-      --muted: #5c564c;
-      --line: #d9d2c5;
-      --paper: #f6f3ec;
-      --card: #fffdf8;
-      --listen: #1f6b4a;
-      --tx: #9a3412;
-      --bad: #9f1239;
+      color-scheme: dark;
+      --ink: #f4efe6;
+      --muted: #b7b0a4;
+      --line: #3a342c;
+      --paper: #14120f;
+      --card: #1e1b17;
+      --field: #12100e;
+      --listen: #2f9d68;
+      --tx: #c2410c;
+      --bad: #fb7185;
     }
     * { box-sizing: border-box; }
     body {
@@ -24,15 +25,18 @@
       background: var(--paper);
     }
     main {
-      max-width: 40rem;
+      max-width: 46rem;
       margin: 0 auto;
       padding: 1.25rem;
     }
     h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+    h2 { font-size: 1.15rem; margin: 0 0 0.45rem; }
+    h3 { font-size: 1rem; margin: 0.95rem 0 0.2rem; }
     p { margin: 0.4rem 0; }
     .warn {
-      background: #fff4e5;
-      border: 1px solid #e7c48a;
+      background: #2a2116;
+      border: 1px solid #8a6a32;
+      color: #f3e6c8;
       padding: 0.75rem 0.9rem;
       margin: 1rem 0;
     }
@@ -44,14 +48,17 @@
       padding: 1rem;
     }
     label { display: grid; gap: 0.25rem; font-weight: 600; }
-    label span { font-weight: 400; color: var(--muted); }
+    label span { font-weight: 400; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
+    .actionhelp { color: var(--muted); font-size: 0.9rem; margin: 0; }
     input {
       font: inherit;
+      color: var(--ink);
       padding: 0.45rem 0.55rem;
       border: 1px solid var(--line);
-      background: white;
+      background: var(--field);
       width: 100%;
     }
+    input::placeholder { color: #7d776d; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
     .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
     button {
@@ -64,7 +71,24 @@
     button:disabled { opacity: 0.55; cursor: default; }
     #listen { background: var(--listen); }
     #ptt { background: var(--tx); min-width: 11rem; }
-    #stop { background: #44403c; }
+    #stop { background: #57534e; }
+    #waterfall {
+      margin: 1rem 0 0;
+      background: #12110f;
+      border: 1px solid var(--line);
+      padding: 0.55rem 0.55rem 0.7rem;
+    }
+    #waterfall canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #07080c;
+    }
+    #wfcap {
+      color: #d6d0c6;
+      font-size: 0.85rem;
+      margin: 0.45rem 0.15rem 0;
+    }
     #status {
       margin-top: 1rem;
       padding: 0.8rem 0.9rem;
@@ -73,46 +97,61 @@
     }
     #status.tx { border-color: var(--tx); }
     #err { color: var(--bad); min-height: 1.4rem; }
-    footer { color: var(--muted); margin-top: 1rem; }
+    .help {
+      margin-top: 1rem;
+      padding: 0.95rem 1rem 1.05rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+    }
+    .help p, .help li { color: #d9d3c8; font-size: 0.92rem; }
+    .help ul { margin: 0.25rem 0 0; padding-left: 1.15rem; }
+    .help li { margin: 0.28rem 0; }
+    @media (max-width: 640px) {
+      .row { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <main>
     <h1>jim-p25</h1>
-    <p>P25 Phase 1 simplex. One frequency. Listen, or send the 1011 Hz test tone.</p>
+    <p>P25 Phase 1 conventional simplex. One C4FM channel, half duplex. Listen in this browser, or send the 1011 Hz test tone. These fields stay on this computer.</p>
     <div class="warn">
-      The HackRF transmits only while push-to-talk is held, for at most 30 seconds,
-      at RF gain 0. Use a frequency you are allowed to transmit on. Keep the radios
-      close together, or put a dummy load on the HackRF.
+      The HackRF transmits only while push-to-talk is held, and it stops at 30 seconds.
+      The RF amplifier stays off. Use a frequency you are allowed to transmit on.
+      Keep the radios close together, or put a dummy load on the HackRF.
     </div>
     <form id="controls">
       <label>Frequency MHz
+        <span>The radio channel. Listening sits 50 kHz above this. Transmitting uses this frequency exactly.</span>
         <input id="frequency" inputmode="decimal" autocomplete="off" placeholder="empty until you set it">
       </label>
       <div class="row">
         <label>NAC hex
-          <span>12-bit, for example 293</span>
-          <input id="nac" autocomplete="off" placeholder="0x000" maxlength="6">
+          <span>12-bit network access code. 293 and 0x293 are the same. The other radio must use this NAC, or be set to $F7E.</span>
+          <input id="nac" autocomplete="off" placeholder="293" maxlength="6">
         </label>
         <label>Talkgroup
+          <span>Group call, 1–65535. Blank becomes 1. The other radio uses this when its channel unmute is selective.</span>
           <input id="tgid" inputmode="numeric" placeholder="1">
         </label>
       </div>
       <div class="row">
         <label>Source ID
+          <span>Sending unit ID, 1–16777215. Blank becomes 1. The other radio can display it. It does not have to be that radio’s ID.</span>
           <input id="src" inputmode="numeric" placeholder="1">
         </label>
         <label>PPM
+          <span>HackRF clock correction. Leave 0 unless the signal sits off the white line. At 446 MHz, 1 PPM is 446 Hz.</span>
           <input id="ppm" inputmode="numeric" value="0">
         </label>
       </div>
       <div class="row">
         <label>Listen gain
-          <span>HackRF IF, snapped to 0–40</span>
+          <span>Receive IF gain in dB. Snaps to 0, 8, 16, 24, 32, or 40. RF amplifier stays off. Does not change transmit power.</span>
           <input id="rx_gain" inputmode="numeric" value="16">
         </label>
         <label>Transmit IF gain
-          <span>RF amp stays off</span>
+          <span>Transmit IF gain in dB, same steps. RF amplifier stays off. 0 and 16 are both under 0 dBm. This is not a power setting.</span>
           <input id="tx_if_gain" inputmode="numeric" value="16">
         </label>
       </div>
@@ -122,16 +161,35 @@
         <button type="button" id="ptt">Push to talk</button>
         <button type="button" id="stop">Stop</button>
       </div>
+      <p class="actionhelp">Listen plays clear voice in this browser. Click it again to stop. Push to talk stops listening and sends the test tone. Release it and listening returns. Stop goes idle and frees the HackRF.</p>
     </form>
+    <figure id="waterfall">
+      <canvas id="wf" width="512" height="160"></canvas>
+      <figcaption id="wfcap">White line: the frequency on this page. Red line: the HackRF tuner, 50 kHz higher, where the DC spike sits while listening. A Phase 1 signal is about 12.5 kHz wide, so it is a thin trace on the white line. The trace runs only while listening.</figcaption>
+    </figure>
+    <section class="help" aria-label="Radio help">
+      <h2>Help</h2>
+      <h3>Channel</h3>
+      <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
+      <h3>Listen</h3>
+      <p>Listen opens the HackRF at 2 million samples per second and runs the CQPSK demodulator this build uses for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio, and this tab plays it. Leave the tab open.</p>
+      <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
+      <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The status line shows the NAC and talkgroup taken from decoded voice frames. A simplex channel sends no trunking control messages, so a control-channel timeout in the log is normal.</p>
+      <h3>Transmit</h3>
+      <p>Push to talk sends the standard 1011 Hz Phase 1 test tone. That tone is an IMBE codeword, repeated until you release the button. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused. The HackRF is half duplex, so listening stops before the tone goes out, and release returns to listen.</p>
+      <p>GNU Radio takes a few seconds to start. Keep holding after the status says transmitting. The tone then runs until you release, or until the 30 second limit. During transmit the local oscillator is on the channel, so the DC spike is on the carrier. The waterfall pauses because the receiver is stopped.</p>
+      <p>Transmit IF gain is an amplifier step, from 0 to 40 dB in steps of 8. The RF amplifier, about 11 dB, stays off. HackRF has no calibrated dBm control. With the RF amplifier off, 0 and 16 are below 0 dBm (1 milliwatt). A setting near 40 can land around 0 dBm, and the real level still changes with frequency. The board’s maximum from 10 MHz to 2170 MHz is about 5 to 15 dBm, which takes the RF amplifier on and IF gain at 47. This panel never does that. On the bench, use 0 or 16, with the radios close or a dummy load fitted.</p>
+      <h3>The other radio lights and stays quiet</h3>
+      <ul>
+        <li>Match the frequency. A receive light can come from carrier energy before the voice frames decode.</li>
+        <li>Match the NAC. $F7E on that radio accepts any NAC. Typing F7E here transmits F7E, and a radio set to 293 will refuse it. Type F7E here when you want this receiver to accept every NAC.</li>
+        <li>Leave encryption off on that radio. These frames are clear, algorithm 80 hex.</li>
+        <li>Selective unmute also requires this talkgroup. Normal unmute follows the NAC and ignores the talkgroup.</li>
+        <li>The source ID is the sending unit. A group call plays when the NAC matches, even when this ID is different from the receiving radio.</li>
+        <li>If the light is on and the speaker is quiet at transmit IF gain 0, try 32 with the radios close together.</li>
+      </ul>
+    </section>
     <div id="status">Checking the HackRF…</div>
-    <footer>
-      Clear voice only (algorithm 80 hex). Phase 2, trunking, and encryption keys are not in this page.
-      Listen plays the decoded clear voice in this browser.
-      Push-to-talk sends the standard 1011 Hz tone, and repeats it until you release.
-      Hold the button for a few seconds after the status says transmitting. The tone starts when the transmitter finishes starting.
-      The Motorola stays quiet unless that channel is on this frequency and this NAC, or its NAC is F7E, and the talkgroup matches.
-      OP25’s live microphone coder does not take a NAC, so this page does not use the mic.
-    </footer>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
@@ -141,6 +199,23 @@
       const body = {};
       for (const id of fields) body[id] = $(id).value;
       return body;
+    }
+
+    let saveTimer = 0;
+
+    function remember() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        post("/api/settings", payload()).catch(() => {});
+      }, 300);
+    }
+
+    async function restore() {
+      const saved = await (await fetch("/api/settings")).json();
+      if (!saved.saved) return;
+      for (const id of fields) {
+        if (typeof saved[id] === "string") $(id).value = saved[id];
+      }
     }
 
     function showError(text) {
@@ -216,6 +291,82 @@
       }
     }
 
+    const wfRows = [];
+    let wfKey = "";
+
+    function heat(v) {
+      const x = v / 255;
+      const r = Math.max(0, Math.min(255, (x - 0.45) * 520));
+      const g = Math.max(0, Math.min(255, (x - 0.12) * 420));
+      const b = Math.max(0, Math.min(255, x < 0.5 ? 180 * x : (1 - x) * 220));
+      return [r, g, b, 255];
+    }
+
+    function drawWaterfall(spec) {
+      const canvas = $("wf");
+      const ctx = canvas.getContext("2d");
+      const width = canvas.width;
+      const height = canvas.height;
+      const image = ctx.createImageData(width, height);
+      const data = image.data;
+      const rowCount = wfRows.length;
+      for (let y = 0; y < height; y += 1) {
+        const srcIndex = rowCount - height + y;
+        const row = srcIndex >= 0 ? wfRows[srcIndex] : null;
+        for (let x = 0; x < width; x += 1) {
+          const bin = row ? row[Math.min(row.length - 1, Math.floor(x * row.length / width))] : 0;
+          const px = heat(row ? bin : 0);
+          const at = (y * width + x) * 4;
+          data[at] = px[0];
+          data[at + 1] = px[1];
+          data[at + 2] = px[2];
+          data[at + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+      const span = spec && spec.span_hz ? spec.span_hz : 2000000;
+      const offset = spec && spec.offset_hz ? spec.offset_hz : 50000;
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(width / 2 + 0.5, 0);
+      ctx.lineTo(width / 2 + 0.5, height);
+      ctx.stroke();
+      const dc = width / 2 + (offset / span) * width;
+      ctx.strokeStyle = "rgba(255,70,70,0.95)";
+      ctx.beginPath();
+      ctx.moveTo(dc + 0.5, 0);
+      ctx.lineTo(dc + 0.5, height);
+      ctx.stroke();
+    }
+
+    function mhz(hz) {
+      return (hz / 1e6).toFixed(3);
+    }
+
+    async function pollSpectrum() {
+      try {
+        const spec = await (await fetch("/api/spectrum")).json();
+        if (spec.listening && Array.isArray(spec.db) && spec.db.length > 8) {
+          const key = String(spec.tuned_hz) + ":" + String(spec.offset_hz);
+          if (key !== wfKey) {
+            wfRows.length = 0;
+            wfKey = key;
+          }
+          wfRows.push(spec.db);
+          if (wfRows.length > $("wf").height) wfRows.shift();
+          const half = spec.span_hz / 2;
+          $("wfcap").textContent =
+            "Center line " + mhz(spec.tuned_hz) + " MHz is the frequency on the page. " +
+            "Red line " + mhz(spec.tuned_hz + spec.offset_hz) + " MHz is the HackRF tuner, where the DC spike sits. " +
+            "Span " + mhz(spec.tuned_hz - half) + " to " + mhz(spec.tuned_hz + half) + " MHz.";
+        }
+        drawWaterfall(spec);
+      } catch (err) {
+        drawWaterfall(null);
+      }
+    }
+
     async function refresh() {
       try {
         const status = await (await fetch("/api/status")).json();
@@ -225,6 +376,9 @@
         $("status").textContent = "Page lost the radio process.";
       }
     }
+
+    for (const id of fields) $(id).addEventListener("input", remember);
+    $("controls").addEventListener("submit", (event) => event.preventDefault());
 
     $("listen").addEventListener("click", async () => {
       showError("");
@@ -282,8 +436,13 @@
 
     const statusBox = $("status");
     statusBox.style.whiteSpace = "pre-line";
+    restore().catch(() => {
+      showError("Could not load saved settings.");
+    });
     refresh();
     setInterval(refresh, 1000);
+    pollSpectrum();
+    setInterval(pollSpectrum, 120);
   </script>
 </body>
 </html>

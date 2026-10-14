@@ -4,6 +4,18 @@ P25 Phase 1 conventional simplex tester for a HackRF One and a Motorola radio yo
 
 The page runs in Ubuntu on WSL2 and opens in the Windows browser. You set one frequency and the P25 network access code (NAC). Listen plays decoded clear voice in the browser. Push-to-talk sends the standard 1011 Hz Phase 1 test tone with that NAC, talkgroup, and source ID.
 
+## The page
+
+These pictures are the empty form. A frequency you type is saved on this computer under `local/`, which is not in git.
+
+![jim-p25 controls and listening waterfall](docs/panel.png)
+
+Listen, push-to-talk, and Stop sit with the channel fields. The waterfall stays quiet until Listen is on. The white line is the channel. The red line is the tuner, 50 kHz higher.
+
+![Help for the NAC, the gains, and a silent radio](docs/help.png)
+
+The Help section is the operator reference: NAC, talkgroup, source ID, PPM, both gains, the 1011 Hz test tone, and what to check when the other radio lights and stays quiet.
+
 ## Goals
 
 In scope:
@@ -13,13 +25,14 @@ In scope:
 - Clear voice only. The algorithm ID is fixed at `0x80`. There is no key field.
 - Push-to-talk audio is the 1011 Hz IMBE test tone, so the NAC and IDs on the page are the ones in the frames. OP25’s live microphone coder hardcodes a NAC, so this page does not use the mic.
 - Half duplex. The HackRF listens or transmits, never both. Transmit runs only while the button is held, and it stops after 30 seconds. RF gain stays at 0.
+- A listening waterfall, 2 MHz wide, centered on the channel. The white line is the channel. The red line is the HackRF local oscillator, 50 kHz higher.
 
 Out of scope:
 
 - Phase 2 TDMA, trunking, and scanning.
 - Encryption, decryption, and keys.
 - Inhibit, radio-check, and other radio-disable messages.
-- Firmware flashing, and a waterfall display.
+- Firmware flashing.
 
 Use a frequency you are allowed to transmit on. Keep the radios close together, or put a dummy load on the HackRF.
 
@@ -29,7 +42,7 @@ Listen works. A Phase 1 clear call on the tuned frequency plays in the browser.
 
 Transmit keys the HackRF and the symbol file is real P25. On the last transmission, every frame carried NAC `0x293` (659 decimal): one header, 70 voice frames that carry the talkgroup, and 70 voice frames that carry algorithm `0x80`. The same encoder’s output has decoded as a group call, talkgroup 1, source 1, with zero voice-frame errors. The link-control opcode is 0 (group call), and the manufacturer ID is 0.
 
-A Motorola conventional radio has shown a receive indication and stayed silent when the page used Motorola’s usual defaults: NAC `293`, talkgroup 1, source ID 1, encryption off. Those values are present in the frames. The next check is a second radio on the same channel. A waterfall is a later build, so a signal on the air can be seen without a second radio decoding it.
+A Motorola conventional radio has shown a receive indication and stayed silent when the page used Motorola’s usual defaults: NAC `293`, talkgroup 1, source ID 1, encryption off. Those values are present in the frames. The next check is a second radio on the same channel. The page waterfall shows the 2 MHz around the tuned frequency while listening, with the HackRF DC spike 50 kHz above the center line.
 
 `local/rx.log` prints `control channel timeout` on a simplex channel. OP25’s receiver is built around a trunk tracker, and a simplex radio does not send trunking control messages. Voice frames on the tuned frequency still decode.
 
@@ -50,7 +63,7 @@ On the page, enter the frequency in MHz and the NAC in hex (`293` and `0x293` ar
 
 Click Listen and leave the tab open. The browser plays the voice. Hold Push to talk for a few seconds after the status says transmitting. GNU Radio spends a few seconds starting, then the tone repeats until you release the button. Stop returns to idle.
 
-Frequency, NAC, talkgroup, and source ID are written under `local/` when you press a button. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
+The page stores frequency, NAC, talkgroup, source ID, PPM, and both gains in `local/settings.json` as you type, and fills them back in when you open it. Listen and transmit also write the channel files under `local/`. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
 
 This stack does not run on Windows itself. On this machine it lives in WSL distro `Ubuntu-24.04`, running as root:
 
@@ -109,11 +122,11 @@ Stopping the page also stops a leftover `rx.py` or `dv_tx.py`. Those children ru
 
 ### Page
 
-`app/server.py` serves `app/index.html` on `127.0.0.1:8765` and calls `app/radio.py`. `app/settings.py` checks the form: frequency 1–6000 MHz, a 12-bit NAC, talkgroup up to 65535, source ID up to 16777215, PPM from −200 to 200. Listen and transmit IF gains snap to 0, 8, 16, 24, 32, or 40. RF gain is always 0.
+`app/server.py` serves `app/index.html` on `127.0.0.1:8765` and calls `app/radio.py`. `app/settings.py` checks the form: frequency 1–6000 MHz, a 12-bit NAC, talkgroup up to 65535, source ID up to 16777215, PPM from −200 to 200. Listen and transmit IF gains snap to 0, 8, 16, 24, 32, or 40. RF gain is always 0. The typed fields, including a half-finished frequency, are kept in `local/settings.json`. Listen still requires a valid frequency.
 
 ```mermaid
 flowchart LR
-    form[Browser form] -->|POST listen, tx, release, stop| api[server.py]
+    form[Browser form] -->|POST listen, tx, release, stop, settings| api[server.py]
     api --> settings[settings.py]
     settings --> radio[radio.py]
     radio --> local[gitignored local/]
@@ -123,7 +136,7 @@ flowchart LR
 
 ### Listen
 
-Listen writes one conventional row to `local/trunk.tsv` and starts OP25 `rx.py` with the working directory set to the OP25 apps folder. The demod is `cqpsk`, which boatbod OP25 uses for Phase 1 C4FM as well as CQPSK. The tuning offset is 50 kHz so the signal is not on the HackRF DC spike. The sample rate is 2 Msps. The vocoder is on. Phase 2 flags are not passed.
+Listen writes one conventional row to `local/trunk.tsv` and starts `app/listen_fft.py`, which runs OP25 `rx.py` with the working directory set to the OP25 apps folder. The demod is `cqpsk`, which boatbod OP25 uses for Phase 1 C4FM as well as CQPSK. The HackRF local oscillator is 50 kHz above the channel, so its DC spike is not on the tuned frequency. The sample rate is 2 Msps. The page draws that spectrum as a waterfall: the center line is the channel, and the red line is the DC spike. The vocoder is on. Phase 2 flags are not passed.
 
 Decoded voice leaves OP25 as UDP on `127.0.0.1:23456`: 8000 Hz, 16-bit mono, 320 bytes per 20 ms voice frame. The page keeps those frames and the browser plays them. WSL has no speaker, so the ALSA player is not started. `rx.py` must not be run with Python’s unbuffered flag. Its startup calls `detach()` twice, and that crashes when stderr is already a raw file.
 
@@ -164,8 +177,9 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 ```
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page
-app/index.html    the form and browser audio
+app/index.html    the form, waterfall, help, and browser audio
+app/listen_fft.py listening spectrum, no gnuplot window
 app/radio.py      listen and transmit processes
 app/settings.py   form checks
-local/            channel files and logs, not in git
+local/            settings, channel files, and logs, not in git
 ```

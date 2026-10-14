@@ -8,10 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from radio import Radio
-from settings import SettingsError, channel_from_json
+from settings import SettingsError, channel_from_json, load_form, save_form
 
 HERE = Path(__file__).resolve().parent
 INDEX = (HERE / "index.html").read_text(encoding="utf-8")
+SETTINGS = HERE.parent / "local" / "settings.json"
 RADIO = Radio()
 HOST = "127.0.0.1"
 PORT = 8765
@@ -53,6 +54,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._json(200, RADIO.status())
             return
+        if path == "/api/spectrum":
+            self._json(200, RADIO.spectrum())
+            return
+        if path == "/api/settings":
+            self._json(200, load_form(SETTINGS))
+            return
         if path == "/api/pcm":
             pcm = RADIO.take_pcm()
             if not pcm:
@@ -77,7 +84,12 @@ class Handler(BaseHTTPRequestHandler):
                 RADIO.release()
                 self._json(200, RADIO.status())
                 return
+            if path == "/api/settings":
+                self._json(200, save_form(SETTINGS, data))
+                return
             channel = channel_from_json(data)
+            if path in ("/api/listen", "/api/tx"):
+                save_form(SETTINGS, data)
             if path == "/api/listen":
                 RADIO.listen(channel)
                 self._json(200, RADIO.status())

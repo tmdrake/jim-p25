@@ -7,6 +7,7 @@ source ID from the page. Algorithm ID is fixed at 0x80 (clear).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -25,6 +26,10 @@ RX_HTTP = "127.0.0.1:18765"
 # 160 samples of 8000 Hz 16-bit audio, one IMBE voice frame.
 PCM_BYTES = 320
 PCM_PORT = 23456
+# HackRF LO sits this far above the channel so the DC spike is not on the tuned frequency.
+TUNER_OFFSET_HZ = 50_000
+RX_RATE_HZ = 2_000_000
+SPEC_PORT = 23457
 
 _NAC_RE = re.compile(r"\bNAC[:\s]+(0x[0-9a-fA-F]{1,3}|\d+)\b")
 _TG_RE = re.compile(r"tgid\((\d+)\)", re.IGNORECASE)
@@ -109,6 +114,63 @@ class _PcmTap:
             return data
 
 
+class _SpectrumTap:
+    """Latest waterfall row from the listen process."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._frame: dict | None = None
+        self._run = False
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.stop()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", SPEC_PORT))
+        sock.settimeout(0.4)
+        self._sock = sock
+        self._run = True
+        with self._lock:
+            self._frame = None
+        thread = threading.Thread(target=self._loop, name="spectrum", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        self._run = False
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            sock.close()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+
+    def _loop(self) -> None:
+        sock = self._sock
+        while self._run and sock is not None:
+            try:
+                data, _addr = sock.recvfrom(65535)
+            except (socket.timeout, OSError):
+                continue
+            try:
+                frame = json.loads(data.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(frame, dict) or not isinstance(frame.get("db"), list):
+                continue
+            with self._lock:
+                self._frame = frame
+
+    def latest(self) -> dict | None:
+        with self._lock:
+            if self._frame is None:
+                return None
+            return dict(self._frame)
+
+
 def _tail(path: Path, limit: int = 65536) -> str:
     if not path.exists():
         return ""
@@ -151,17 +213,17 @@ def rx_command(channel: dict, trunk_path: Path) -> list[str]:
     gains = f"RF:0,IF:{channel['rx_gain']},BB:{channel['bb_gain']}"
     return [
         "python3",
-        str(OP25_APPS / "rx.py"),
+        str(REPO / "app" / "listen_fft.py"),
         "--args",
         "hackrf",
         "-N",
         gains,
         "-S",
-        "2000000",
+        str(RX_RATE_HZ),
         "-f",
         str(channel["frequency_hz"]),
         "-o",
-        "50000",
+        str(TUNER_OFFSET_HZ),
         "-q",
         str(channel["ppm"]),
         "-D",
@@ -264,6 +326,7 @@ class Radio:
         self._message = "Idle"
         self._timer: threading.Timer | None = None
         self._pcm = _PcmTap()
+        self._spec = _SpectrumTap()
         LOCAL.mkdir(exist_ok=True)
 
     def _hackrf_ready(self) -> str:
@@ -312,6 +375,7 @@ class Radio:
             channel = dict(self._channel) if self._channel else None
         if exited:
             self._pcm.stop()
+            self._spec.stop()
         nac, tg = self._decoded() if mode == "listen" else ("", "")
         device = "busy" if mode in ("listen", "tx") else self._hackrf_ready()
         view = None
@@ -335,6 +399,18 @@ class Radio:
     def take_pcm(self) -> bytes:
         return self._pcm.take()
 
+    def spectrum(self) -> dict:
+        with self._lock:
+            listening = self._mode == "listen"
+        frame = self._spec.latest() or {}
+        return {
+            "listening": listening,
+            "tuned_hz": frame.get("tuned_hz"),
+            "span_hz": frame.get("span_hz", RX_RATE_HZ),
+            "offset_hz": frame.get("offset_hz", TUNER_OFFSET_HZ),
+            "db": frame.get("db"),
+        }
+
     def stop(self) -> None:
         with self._lock:
             timer = self._timer
@@ -349,6 +425,7 @@ class Radio:
         if timer:
             timer.cancel()
         self._pcm.stop()
+        self._spec.stop()
         _stop_process(proc)
 
     def listen(self, channel: dict) -> None:
@@ -365,14 +442,21 @@ class Radio:
             cmd = rx_command(channel, trunk)
             try:
                 self._pcm.start()
+                self._spec.start()
             except OSError as exc:
+                self._pcm.stop()
+                self._spec.stop()
                 log.close()
                 raise SettingsError("The voice port is already in use.") from exc
+            env = _env()
+            env["JIM_TUNED_HZ"] = str(channel["frequency_hz"])
+            env["JIM_OFFSET_HZ"] = str(TUNER_OFFSET_HZ)
+            env["JIM_SPAN_HZ"] = str(RX_RATE_HZ)
             try:
                 proc = subprocess.Popen(
                     cmd,
                     cwd=str(OP25_APPS),
-                    env=_env(),
+                    env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -380,6 +464,7 @@ class Radio:
                 )
             except Exception:
                 self._pcm.stop()
+                self._spec.stop()
                 log.close()
                 raise
             self._proc = proc
