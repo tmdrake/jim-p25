@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -21,6 +22,9 @@ OP25_APPS = Path(os.environ.get("OP25_APPS", "/root/op25/op25/gr-op25_repeater/a
 REPO = Path(__file__).resolve().parent.parent
 LOCAL = REPO / "local"
 RX_HTTP = "127.0.0.1:18765"
+# 160 samples of 8000 Hz 16-bit audio, one IMBE voice frame.
+PCM_BYTES = 320
+PCM_PORT = 23456
 
 _NAC_RE = re.compile(r"\bNAC[:\s]+(0x[0-9a-fA-F]{1,3}|\d+)\b")
 _TG_RE = re.compile(r"tgid\((\d+)\)", re.IGNORECASE)
@@ -30,13 +34,79 @@ class RadioBusy(SettingsError):
     pass
 
 
-def _env() -> dict:
+def _env(unbuffered: bool = False) -> dict:
+    """Build the child environment.
+
+    rx.py turns off stderr buffering with detach().detach(). That crashes
+    when Python is already unbuffered, because stderr is a raw FileIO.
+    Transmit does not do that, so only the transmitter is unbuffered.
+    """
     env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    env.pop("PYTHONUNBUFFERED", None)
+    if unbuffered:
+        env["PYTHONUNBUFFERED"] = "1"
     pulse = "/mnt/wslg/PulseServer"
     if os.path.exists(pulse):
         env["PULSE_SERVER"] = "unix:" + pulse
     return env
+
+
+class _PcmTap:
+    """Collect the vocoder's UDP audio. Control packets are not 320 bytes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._buf = bytearray()
+        self._run = False
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.stop()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", PCM_PORT))
+        sock.settimeout(0.4)
+        self._sock = sock
+        self._run = True
+        with self._lock:
+            self._buf.clear()
+        thread = threading.Thread(target=self._loop, name="pcm", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        self._run = False
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            sock.close()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+        with self._lock:
+            self._buf.clear()
+
+    def _loop(self) -> None:
+        sock = self._sock
+        while self._run and sock is not None:
+            try:
+                data, _addr = sock.recvfrom(4096)
+            except (socket.timeout, OSError):
+                continue
+            if len(data) != PCM_BYTES:
+                continue
+            with self._lock:
+                self._buf.extend(data)
+                extra = len(self._buf) - 8000 * 2 * 2
+                if extra > 0:
+                    del self._buf[:extra]
+
+    def take(self) -> bytes:
+        with self._lock:
+            data = bytes(self._buf)
+            self._buf.clear()
+            return data
 
 
 def _tail(path: Path, limit: int = 65536) -> str:
@@ -99,9 +169,7 @@ def rx_command(channel: dict, trunk_path: Path) -> list[str]:
         "-T",
         str(trunk_path),
         "-V",
-        "-U",
-        "-O",
-        "default",
+        "-w",
         "-l",
         f"http:{RX_HTTP}",
         "-v",
@@ -169,9 +237,18 @@ def tx_command(channel: dict, symbols: Path, iq_path: Path | None) -> list[str]:
         "1",
         "-i",
         "2000000",
+        "-r",
     ]
     if iq_path is None:
-        cmd.extend(["--args", "hackrf", "-N", f"RF:0,IF:{channel['tx_if_gain']}"])
+        # buffers cushions USB stalls. Each stall is a "U" and a gap of silence.
+        cmd.extend(
+            [
+                "--args",
+                "hackrf,buffers=64",
+                "-N",
+                f"RF:0,IF:{channel['tx_if_gain']}",
+            ]
+        )
     else:
         cmd.extend(["-o", str(iq_path)])
     return cmd
@@ -186,6 +263,7 @@ class Radio:
         self._channel: dict | None = None
         self._message = "Idle"
         self._timer: threading.Timer | None = None
+        self._pcm = _PcmTap()
         LOCAL.mkdir(exist_ok=True)
 
     def _hackrf_ready(self) -> str:
@@ -220,6 +298,7 @@ class Radio:
         return nac, tg
 
     def status(self) -> dict:
+        exited = False
         with self._lock:
             if self._proc is not None and self._proc.poll() is not None:
                 code = self._proc.returncode
@@ -227,9 +306,12 @@ class Radio:
                     self._message = f"{self._mode} stopped (exit {code})"
                 self._mode = "idle"
                 self._proc = None
+                exited = True
             mode = self._mode
             message = self._message
             channel = dict(self._channel) if self._channel else None
+        if exited:
+            self._pcm.stop()
         nac, tg = self._decoded() if mode == "listen" else ("", "")
         device = "busy" if mode in ("listen", "tx") else self._hackrf_ready()
         view = None
@@ -250,6 +332,9 @@ class Radio:
             "tx_limit_s": TX_LIMIT_S,
         }
 
+    def take_pcm(self) -> bytes:
+        return self._pcm.take()
+
     def stop(self) -> None:
         with self._lock:
             timer = self._timer
@@ -263,6 +348,7 @@ class Radio:
                 self._message = "Stopped"
         if timer:
             timer.cancel()
+        self._pcm.stop()
         _stop_process(proc)
 
     def listen(self, channel: dict) -> None:
@@ -277,19 +363,32 @@ class Radio:
             write_trunk(channel, trunk)
             log = open(LOCAL / "rx.log", "w", encoding="utf-8")
             cmd = rx_command(channel, trunk)
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(OP25_APPS),
-                env=_env(),
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            try:
+                self._pcm.start()
+            except OSError as exc:
+                log.close()
+                raise SettingsError("The voice port is already in use.") from exc
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(OP25_APPS),
+                    env=_env(),
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception:
+                self._pcm.stop()
+                log.close()
+                raise
             self._proc = proc
             self._mode = "listen"
             self._channel = channel
-            self._message = f"Listening on {channel['frequency_mhz']} MHz"
+            self._message = (
+                f"Listening on {channel['frequency_mhz']} MHz. "
+                "Voice plays in this browser."
+            )
             log.close()
 
     def _build_symbols(self, channel: dict) -> Path:
@@ -361,7 +460,7 @@ class Radio:
             started = subprocess.Popen(
                 cmd,
                 cwd=str(OP25_APPS / "tx"),
-                env=_env(),
+                env=_env(unbuffered=True),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -371,7 +470,10 @@ class Radio:
             self._mode = "tx"
             self._channel = channel
             self._resume_listen = resume
-            self._message = f"Transmitting test tone on {channel['frequency_mhz']} MHz"
+            self._message = (
+                f"Transmitting test tone on {channel['frequency_mhz']} MHz. "
+                "Hold for a few seconds."
+            )
             timer = threading.Timer(TX_LIMIT_S, self._tx_expired)
             timer.daemon = True
             self._timer = timer

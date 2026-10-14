@@ -126,7 +126,10 @@
     <div id="status">Checking the HackRF…</div>
     <footer>
       Clear voice only (algorithm 80 hex). Phase 2, trunking, and encryption keys are not in this page.
-      Push-to-talk sends the standard 1011 Hz tone so the NAC, talkgroup, and source ID above are the ones on the air.
+      Listen plays the decoded clear voice in this browser.
+      Push-to-talk sends the standard 1011 Hz tone, and repeats it until you release.
+      Hold the button for a few seconds after the status says transmitting. The tone starts when the transmitter finishes starting.
+      The Motorola stays quiet unless that channel is on this frequency and this NAC, or its NAC is F7E, and the talkgroup matches.
       OP25’s live microphone coder does not take a NAC, so this page does not use the mic.
     </footer>
   </main>
@@ -174,10 +177,50 @@
       $("listen").textContent = status.mode === "listen" ? "Listening" : "Listen";
     }
 
+    let audioCtx = null;
+    let playAt = 0;
+    let pumping = false;
+
+    function ensureAudio() {
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+    }
+
+    function playPcm(raw) {
+      if (!audioCtx || raw.byteLength < 2) return;
+      const view = new Int16Array(raw);
+      const samples = new Float32Array(view.length);
+      for (let i = 0; i < view.length; i += 1) samples[i] = view[i] / 32768;
+      const buffer = audioCtx.createBuffer(1, samples.length, 8000);
+      buffer.copyToChannel(samples, 0);
+      const node = audioCtx.createBufferSource();
+      node.buffer = buffer;
+      node.connect(audioCtx.destination);
+      const when = Math.max(playAt, audioCtx.currentTime + 0.06);
+      node.start(when);
+      playAt = when + buffer.duration;
+    }
+
+    async function pumpAudio() {
+      if (pumping) return;
+      pumping = true;
+      try {
+        while ($("listen").textContent === "Listening") {
+          const response = await fetch("/api/pcm");
+          if (response.status === 200) playPcm(await response.arrayBuffer());
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+      } finally {
+        pumping = false;
+        playAt = 0;
+      }
+    }
+
     async function refresh() {
       try {
         const status = await (await fetch("/api/status")).json();
         paint(status);
+        if (status.mode === "listen" && audioCtx) pumpAudio();
       } catch (err) {
         $("status").textContent = "Page lost the radio process.";
       }
@@ -191,7 +234,9 @@
           paint(await post("/api/stop"));
           return;
         }
+        ensureAudio();
         paint(await post("/api/listen", payload()));
+        pumpAudio();
       } catch (err) {
         showError(err.message);
       }

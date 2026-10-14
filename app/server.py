@@ -53,6 +53,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/status":
             self._json(200, RADIO.status())
             return
+        if path == "/api/pcm":
+            pcm = RADIO.take_pcm()
+            if not pcm:
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            self._send(200, pcm, "application/octet-stream")
+            return
         self._json(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
