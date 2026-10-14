@@ -50,13 +50,32 @@
     label { display: grid; gap: 0.25rem; font-weight: 600; }
     label span { font-weight: 400; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
     .actionhelp { color: var(--muted); font-size: 0.9rem; margin: 0; }
-    input {
+    input:not([type="range"]) {
       font: inherit;
       color: var(--ink);
       padding: 0.45rem 0.55rem;
       border: 1px solid var(--line);
       background: var(--field);
       width: 100%;
+    }
+    .slider {
+      display: grid;
+      grid-template-columns: 1fr 3.4rem;
+      align-items: center;
+      gap: 0.55rem;
+    }
+    input[type="range"] {
+      width: 100%;
+      height: 1.7rem;
+      margin: 0;
+      accent-color: #e7e1d6;
+    }
+    #rx_gain { accent-color: var(--listen); }
+    #tx_if_gain { accent-color: var(--tx); }
+    .slider output {
+      font-weight: 600;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
     input::placeholder { color: #7d776d; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
@@ -127,7 +146,7 @@
     </div>
     <form id="controls">
       <label>Frequency MHz
-        <span>The radio channel. Listening sits 50 kHz above this. Transmitting uses this frequency exactly.</span>
+        <span>The radio channel. The HackRF tuner sits 50 kHz above this for listen and transmit. The test tone stays on this frequency.</span>
         <input id="frequency" inputmode="decimal" autocomplete="off" placeholder="empty until you set it">
       </label>
       <div class="row">
@@ -147,25 +166,26 @@
         </label>
         <label>PPM
           <span>HackRF clock correction. Leave 0 unless the signal sits off the white line. At 446 MHz, 1 PPM is 446 Hz.</span>
-          <input id="ppm" inputmode="numeric" value="0">
+          <span class="slider"><input id="ppm" type="range" min="-200" max="200" step="1" value="0"><output id="ppm_out">0</output></span>
         </label>
       </div>
       <div class="row">
         <label>Listen gain
-          <span>Receive IF gain in dB. Snaps to 0, 8, 16, 24, 32, or 40. RF amplifier stays off. Does not change transmit power.</span>
-          <input id="rx_gain" inputmode="numeric" value="16">
+          <span>Receive IF gain in dB. Steps of 8 from 0 to 40. RF amplifier stays off. Does not change transmit power.</span>
+          <span class="slider"><input id="rx_gain" type="range" min="0" max="40" step="8" value="16"><output id="rx_gain_out">16</output></span>
         </label>
         <label>Transmit IF gain
-          <span>Transmit IF gain in dB, same steps. RF amplifier stays off. 0 and 16 are both under 0 dBm. This is not a power setting.</span>
-          <input id="tx_if_gain" inputmode="numeric" value="16">
+          <span>Tuner IF amplifier in dB, same steps. RF amplifier stays off. 0 and 16 are both under 0 dBm.</span>
+          <span class="slider"><input id="tx_if_gain" type="range" min="0" max="40" step="8" value="16"><output id="tx_if_gain_out">16</output></span>
         </label>
       </div>
       <p id="err"></p>
       <div class="actions">
+        <button type="button" id="listen" aria-pressed="false">Receive</button>
         <button type="button" id="ptt" aria-pressed="false">Transmit</button>
         <button type="button" id="stop">Stop</button>
       </div>
-      <p id="actionhelp" class="actionhelp">Transmit turns the test tone on and leaves it on. Stop turns it off.</p>
+      <p id="actionhelp" class="actionhelp">Receive and Transmit each latch on. Stop is the only button that turns them off.</p>
     </form>
     <div id="status">Checking the HackRF…</div>
     <figure id="waterfall">
@@ -177,13 +197,13 @@
       <h3>Channel</h3>
       <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
       <h3>Receive</h3>
-      <p>Receive is not a button on this page. The buttons are Transmit and Stop, so the waterfall stays quiet.</p>
-      <p>The receiver is still in the program. When it runs, it opens the HackRF at 2 million samples per second and uses the CQPSK demodulator for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio for this browser.</p>
+      <p>Receive latches listening on. A second click does not turn it off, which avoids stopping it during the few seconds GNU Radio takes to start. Stop is the off switch. Transmit latches the same way, and it turns receive off while the tone is on.</p>
+      <p>Receive opens the HackRF at 2 million samples per second and uses the CQPSK demodulator for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio for this browser. Leave the tab open.</p>
       <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
       <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The status line shows the NAC and talkgroup taken from decoded voice frames. A simplex channel sends no trunking control messages, so a control-channel timeout in the log is normal.</p>
       <h3>Transmit</h3>
-      <p>Transmit sends the standard 1011 Hz Phase 1 test tone and leaves it on. Letting go does not stop it. Stop is the off switch. The tone is an IMBE codeword, repeated until then. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused.</p>
-      <p>GNU Radio takes a few seconds to start. The tone begins after the status says transmitting, and it stays until Stop. During transmit the local oscillator is on the channel, so the DC spike is on the carrier.</p>
+      <p>Transmit sends the standard 1011 Hz Phase 1 test tone and latches on, the same way Receive does. Letting go does not stop it, and clicking Transmit again does not stop it. Stop is the off switch. The tone is an IMBE codeword, repeated until then. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused.</p>
+      <p>GNU Radio takes a few seconds to start. The tone begins after the status says transmitting, and it stays until Stop. The tuner sits 50 kHz above the channel, and the tone is shifted back down, so the DC spike stays off the carrier.</p>
       <p>Transmit IF gain is an amplifier step, from 0 to 40 dB in steps of 8. The RF amplifier, about 11 dB, stays off. HackRF has no calibrated dBm control. With the RF amplifier off, 0 and 16 are below 0 dBm (1 milliwatt). A setting near 40 can land around 0 dBm, and the real level still changes with frequency. The board’s maximum from 10 MHz to 2170 MHz is about 5 to 15 dBm, which takes the RF amplifier on and IF gain at 47. This panel never does that. On the bench, use 0 or 16, with the radios close or a dummy load fitted.</p>
       <h3>The other radio lights and stays quiet</h3>
       <ul>
@@ -215,12 +235,19 @@
       }, 300);
     }
 
+    function showSliders() {
+      for (const id of ["ppm", "rx_gain", "tx_if_gain"]) {
+        $(id + "_out").textContent = $(id).value;
+      }
+    }
+
     async function restore() {
       const saved = await (await fetch("/api/settings")).json();
       if (!saved.saved) return;
       for (const id of fields) {
-        if (typeof saved[id] === "string") $(id).value = saved[id];
+        if (typeof saved[id] === "string" && saved[id] !== "") $(id).value = saved[id];
       }
+      showSliders();
     }
 
     function showError(text) {
@@ -255,11 +282,19 @@
       box.textContent = lines.join("\n");
       const mode = status.mode || "idle";
       radioMode = mode;
+      const listen = $("listen");
       const tone = $("ptt");
       const stop = $("stop");
-      tone.classList.toggle("on", mode === "tx");
-      tone.setAttribute("aria-pressed", mode === "tx" ? "true" : "false");
-      stop.classList.toggle("needed", mode === "tx");
+      if (!arming) {
+        listen.disabled = mode === "tx";
+        listen.textContent = mode === "listen" ? "Receiving" : "Receive";
+        listen.classList.toggle("on", mode === "listen");
+        listen.setAttribute("aria-pressed", mode === "listen" ? "true" : "false");
+        tone.textContent = mode === "tx" ? "Transmitting" : "Transmit";
+        tone.classList.toggle("on", mode === "tx");
+        tone.setAttribute("aria-pressed", mode === "tx" ? "true" : "false");
+        stop.classList.toggle("needed", mode === "listen" || mode === "tx");
+      }
     }
 
     let audioCtx = null;
@@ -290,7 +325,7 @@
       if (pumping) return;
       pumping = true;
       try {
-        while ($("listen").textContent === "Listening") {
+        while ($("listen").textContent === "Receiving") {
           const response = await fetch("/api/pcm");
           if (response.status === 200) playPcm(await response.arrayBuffer());
           await new Promise((resolve) => setTimeout(resolve, 60));
@@ -381,24 +416,52 @@
       try {
         const status = await (await fetch("/api/status")).json();
         paint(status);
+        if (status.mode === "listen" && audioCtx) pumpAudio();
       } catch (err) {
         $("status").textContent = "Page lost the radio process.";
       }
     }
 
-    for (const id of fields) $(id).addEventListener("input", remember);
+    for (const id of fields) {
+      $(id).addEventListener("input", () => {
+        showSliders();
+        remember();
+      });
+    }
     $("controls").addEventListener("submit", (event) => event.preventDefault());
 
     let radioMode = "idle";
     let arming = false;
-    $("ptt").addEventListener("click", async () => {
-      if (arming || radioMode === "tx") return;
+
+    $("listen").addEventListener("click", async () => {
+      if (arming || radioMode !== "idle") return;
       arming = true;
       showError("");
+      $("listen").textContent = "Receiving";
+      $("listen").classList.add("on");
+      try {
+        ensureAudio();
+        paint(await post("/api/listen", payload()));
+        pumpAudio();
+      } catch (err) {
+        showError(err.message);
+        try { paint(await (await fetch("/api/status")).json()); } catch (ignore) {}
+      } finally {
+        arming = false;
+      }
+    });
+
+    $("ptt").addEventListener("click", async () => {
+      if (arming || radioMode !== "idle") return;
+      arming = true;
+      showError("");
+      $("ptt").textContent = "Transmitting";
+      $("ptt").classList.add("on");
       try {
         paint(await post("/api/tx", payload()));
       } catch (err) {
         showError(err.message);
+        try { paint(await (await fetch("/api/status")).json()); } catch (ignore) {}
       } finally {
         arming = false;
       }
@@ -417,7 +480,7 @@
     statusBox.style.whiteSpace = "pre-line";
     restore().catch(() => {
       showError("Could not load saved settings.");
-    });
+    }).finally(showSliders);
     refresh();
     setInterval(refresh, 1000);
     pollSpectrum();

@@ -76,7 +76,7 @@ function Stop-Page {
         @'
 import os, signal
 me = os.getpid()
-needles = ("app/server.py", "app/listen_fft.py", "repeater/apps/rx.py", "repeater/apps/tx/dv_tx.py")
+needles = ("app/server.py", "app/listen_fft.py", "app/tx_offset.py", "repeater/apps/rx.py", "repeater/apps/tx/dv_tx.py")
 for name in os.listdir("/proc"):
     if not name.isdigit():
         continue

@@ -56,6 +56,14 @@ def _env(unbuffered: bool = False) -> dict:
     return env
 
 
+def _tx_env(unbuffered: bool) -> dict:
+    env = _env(unbuffered=unbuffered)
+    env["JIM_TX_SHIFT_HZ"] = str(TUNER_OFFSET_HZ)
+    env["JIM_TX_RATE_HZ"] = "2000000"
+    env["JIM_DV_TX"] = str(OP25_APPS / "tx" / "dv_tx.py")
+    return env
+
+
 class _PcmTap:
     """Collect the vocoder's UDP audio. Control packets are not 320 bytes."""
 
@@ -286,7 +294,7 @@ def unpack_command(packed: Path, symbols: Path) -> list[str]:
 def tx_command(channel: dict, symbols: Path, iq_path: Path | None) -> list[str]:
     cmd = [
         "python3",
-        str(OP25_APPS / "tx" / "dv_tx.py"),
+        str(REPO / "app" / "tx_offset.py"),
         "-p",
         "p25",
         "-t",
@@ -515,7 +523,7 @@ class Radio:
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(OP25_APPS / "tx"),
-                env=_env(),
+                env=_tx_env(unbuffered=False),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
@@ -544,7 +552,7 @@ class Radio:
             started = subprocess.Popen(
                 cmd,
                 cwd=str(OP25_APPS / "tx"),
-                env=_env(unbuffered=True),
+                env=_tx_env(unbuffered=True),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -556,9 +564,19 @@ class Radio:
             self._resume_listen = resume
             self._message = (
                 f"Transmitting test tone on {channel['frequency_mhz']} MHz. "
+                "The tuner is 50 kHz higher, so the DC spike stays off the carrier. "
                 "Press Stop to end it."
             )
             log.close()
+        time.sleep(0.6)
+        if started.poll() is not None:
+            with self._lock:
+                self._proc = None
+                self._mode = "idle"
+                self._resume_listen = False
+                self._message = "Transmit stopped."
+            detail = (LOCAL / "tx.log").read_text(encoding="utf-8", errors="replace").strip()
+            raise SettingsError(detail[-500:] or "Transmit process exited.")
         return {"ok": True, "nac_hex": channel["nac_hex"], "algid": channel["algid"]}
 
     def release(self) -> None:

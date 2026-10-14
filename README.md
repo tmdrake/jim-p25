@@ -10,7 +10,7 @@ These pictures are the empty form. A frequency you type is saved on this compute
 
 ![jim-p25 controls and listening waterfall](docs/panel.png)
 
-Transmit and Stop sit under the channel fields. The status card is next, then the waterfall. Receive is not a button on this page, so the waterfall stays quiet. The white line is the channel. The red line is the tuner, 50 kHz higher.
+Receive, Transmit, and Stop sit under the channel fields. The status card is next, then the waterfall. Receive turns the waterfall on. The white line is the channel. The red line is the tuner, 50 kHz higher.
 
 ![Help for the NAC, the gains, and a silent radio](docs/help.png)
 
@@ -24,7 +24,7 @@ In scope:
 - A small page: frequency, NAC, talkgroup, source ID, clock correction (PPM), listen gain, and transmit IF gain.
 - Clear voice only. The algorithm ID is fixed at `0x80`. There is no key field.
 - Push-to-talk audio is the 1011 Hz IMBE test tone, so the NAC and IDs on the page are the ones in the frames. OP25’s live microphone coder hardcodes a NAC, so this page does not use the mic.
-- Half duplex. The HackRF listens or transmits, never both. The page buttons are Transmit and Stop. Transmit latches the test tone until Stop. RF gain stays at 0.
+- Half duplex. The HackRF listens or transmits, never both. Receive and Transmit each latch on until Stop. RF gain stays at 0.
 - A listening waterfall, 2 MHz wide, centered on the channel. The white line is the channel. The red line is the HackRF local oscillator, 50 kHz higher.
 
 Out of scope:
@@ -33,9 +33,13 @@ Out of scope:
 - Encryption, decryption, and keys.
 - Inhibit, radio-check, and other radio-disable messages.
 - Firmware flashing.
-- NXDN. This OP25 build can encode P25, DMR, D-Star, and Yaesu System Fusion. The page sends only the P25 test tone. There is no NXDN encoder in the build.
+- NXDN on this page today. Public AMBE+2 decode exists. How that becomes a GNU Radio block is in [ROADMAP.md](ROADMAP.md).
 
 Use a frequency you are allowed to transmit on. Keep the radios close together, or put a dummy load on the HackRF.
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md). The vocoder is a layer we invent (silence, our test tone, optional public AMBE+2 wrap). NXDN framing and 4FSK sit around that layer. Graphs of the stack are in the roadmap.
 
 ## Progress
 
@@ -62,7 +66,7 @@ From this folder in PowerShell:
 
 On the page, enter the frequency in MHz and the NAC in hex (`293` and `0x293` are the same). An empty talkgroup or source ID becomes 1. PPM is the HackRF clock correction in parts per million. Leave it at 0 unless the radio is slightly off the channel. At 446 MHz, 1 PPM is about 446 Hz.
 
-The buttons are Transmit and Stop. Transmit latches the test tone on, and letting go does not stop it. Stop turns it off. GNU Radio spends a few seconds starting.
+Receive and Transmit each latch on. A second click does not turn them off, so the few seconds GNU Radio spends starting does not get cancelled. Stop turns either one off. The browser plays received voice.
 
 The page stores frequency, NAC, talkgroup, source ID, PPM, and both gains in `local/settings.json` as you type, and fills them back in when you open it. Listen and transmit also write the channel files under `local/`. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
 
@@ -158,7 +162,7 @@ Encrypted frames stay silent. A NAC of `F7E` or `F7F` on the page accepts any re
 
 Transmit builds a symbol file and starts `dv_tx.py`. The tone repeats until Stop. Stop returns the HackRF to idle. There is no time limit.
 
-`p25craft.py` writes the clear group call: NAC, talkgroup, and source ID from the page, destination unused for a group call, algorithm `0x80`, key ID 0, manufacturer ID 0, link-control opcode 0. The voice codeword is the TIA 1011 Hz test vector. `unpack.py` turns that into dibits 0–3. `dv_tx.py` C4FM-modulates the file at 2 Msps, repeats it until Stop, and sends it to the HackRF with extra USB buffers. The first moments can print `U`, which is one buffer of silence. The tone follows.
+`p25craft.py` writes the clear group call: NAC, talkgroup, and source ID from the page, destination unused for a group call, algorithm `0x80`, key ID 0, manufacturer ID 0, link-control opcode 0. The voice codeword is the TIA 1011 Hz test vector. `unpack.py` turns that into dibits 0–3. `app/tx_offset.py` runs `dv_tx.py`, tunes the HackRF 50 kHz above the channel, and shifts the C4FM carrier back down so the DC spike is not on the tone. `dv_tx.py` modulates at 2 Msps, repeats until Stop, and sends the samples to the HackRF with extra USB buffers. The first moments can print `U`, which is one buffer of silence. The tone follows.
 
 ```mermaid
 flowchart LR
@@ -176,10 +180,13 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 ## Layout
 
 ```
+ROADMAP.md        NXDN and public AMBE+2 decode
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page
 app/index.html    the form, waterfall, help, and browser audio
 app/listen_fft.py listening spectrum, no gnuplot window
+app/tx_offset.py  transmit tuner 50 kHz above the channel
+app/nxdn/         NXDN48 framer we own; AMBE+2 is a wrap, not in this tree
 app/radio.py      listen and transmit processes
 app/settings.py   form checks
 local/            settings, channel files, and logs, not in git
