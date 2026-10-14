@@ -50,7 +50,7 @@
     label { display: grid; gap: 0.25rem; font-weight: 600; }
     label span { font-weight: 400; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
     .actionhelp { color: var(--muted); font-size: 0.9rem; margin: 0; }
-    input:not([type="range"]) {
+    input:not([type="range"]):not([type="checkbox"]) {
       font: inherit;
       color: var(--ink);
       padding: 0.45rem 0.55rem;
@@ -58,6 +58,28 @@
       background: var(--field);
       width: 100%;
     }
+    input:not([type="range"]):disabled {
+      opacity: 0.45;
+      background: #1a1814;
+    }
+    .flag {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-top: 0.35rem;
+      font-weight: 400;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .flag input { width: auto; accent-color: var(--listen); }
+    .modes {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 1rem;
+      margin: 0.65rem 0 0.2rem;
+    }
+    .modes > span { color: var(--muted); font-size: 0.88rem; }
     .slider {
       display: grid;
       grid-template-columns: 1fr 3.4rem;
@@ -95,6 +117,29 @@
     #ptt.on { box-shadow: inset 0 0 0 3px #ffedd5; cursor: default; }
     #stop { background: #57534e; }
     #stop.needed { background: #b91c1c; }
+    .logcard {
+      margin-top: 1rem;
+      padding: 0.85rem 1rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+    }
+    .logcard h2 { font-size: 1.05rem; margin: 0 0 0.3rem; }
+    .logsum { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.45rem; }
+    .logbox {
+      max-height: 14rem;
+      overflow: auto;
+      margin: 0;
+      padding: 0.4rem 0.5rem;
+      background: var(--field);
+      border: 1px solid var(--line);
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }
+    .log-voice { color: #86efac; }
+    .log-warn { color: var(--bad); }
+    .log-repeat { color: #a8a29e; }
+    .log-info { color: #d6d3d1; }
     #waterfall {
       margin: 1rem 0 0;
       background: #12110f;
@@ -150,10 +195,13 @@
         <input id="frequency" inputmode="decimal" autocomplete="off" placeholder="empty until you set it">
       </label>
       <div class="row">
-        <label>NAC hex
-          <span>12-bit network access code. 293 and 0x293 are the same. The other radio must use this NAC, or be set to $F7E.</span>
-          <input id="nac" autocomplete="off" placeholder="293" maxlength="6">
-        </label>
+        <div>
+          <label>NAC hex
+            <span>12-bit network access code. 293 and 0x293 are the same. The other radio must use this NAC, or be set to $F7E.</span>
+            <input id="nac" autocomplete="off" placeholder="293" maxlength="6">
+          </label>
+          <label class="flag"><input type="checkbox" id="nac_any"> Accept any NAC ($F7E). Greys out the box and puts F7E in the frames and in this receiver.</label>
+        </div>
         <label>Talkgroup
           <span>Group call, 1–65535. Blank becomes 1. The other radio uses this when its channel unmute is selective.</span>
           <input id="tgid" inputmode="numeric" placeholder="1">
@@ -179,6 +227,12 @@
           <span class="slider"><input id="tx_if_gain" type="range" min="0" max="40" step="8" value="16"><output id="tx_if_gain_out">16</output></span>
         </label>
       </div>
+      <div class="modes">
+        <span>Detect and play</span>
+        <label class="flag"><input type="checkbox" id="enable_p25" checked> P25</label>
+        <label class="flag"><input type="checkbox" id="enable_fm" checked> FM</label>
+        <label class="flag"><input type="checkbox" id="enable_am" checked> AM</label>
+      </div>
       <p id="err"></p>
       <div class="actions">
         <button type="button" id="listen" aria-pressed="false">Receive</button>
@@ -192,15 +246,20 @@
       <canvas id="wf" width="512" height="160"></canvas>
       <figcaption id="wfcap">White line: the frequency on this page. Red line: the HackRF tuner, 50 kHz higher, where the DC spike sits while listening. A Phase 1 signal is about 12.5 kHz wide, so it is a thin trace on the white line. The trace runs only while listening.</figcaption>
     </figure>
+    <section class="logcard" aria-label="Stack log">
+      <h2>Stack log</h2>
+      <p id="logsum">AM/FM, NAC, talkgroup, source, and vocoder frames from the radio stack.</p>
+      <div id="logbox" class="logbox"></div>
+    </section>
     <section class="help" aria-label="Radio help">
       <h2>Help</h2>
       <h3>Channel</h3>
       <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
       <h3>Receive</h3>
       <p>Receive latches listening on. A second click does not turn it off, which avoids stopping it during the few seconds GNU Radio takes to start. Stop is the off switch. Transmit latches the same way, and it turns receive off while the tone is on.</p>
-      <p>Receive opens the HackRF at 2 million samples per second and uses the CQPSK demodulator for Phase 1 C4FM. The vocoder turns clear IMBE into 8000 Hz audio for this browser. Leave the tab open.</p>
+      <p>Receive opens the HackRF at 2 million samples per second. Phase 1 C4FM is decoded with the CQPSK demodulator and IMBE vocoder. If that path has no voice frames, analog FM or AM on the same channel is demodulated instead. Both play in this browser at 8000 Hz. The P25 / FM / AM checkboxes turn each detector and its audio on or off without stopping Receive. Leave the tab open.</p>
       <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
-      <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The status line shows the NAC and talkgroup taken from decoded voice frames. A simplex channel sends no trunking control messages, so a control-channel timeout in the log is normal.</p>
+      <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The stack log under the waterfall shows AM vs FM from the IQ envelope and instantaneous frequency, plus NAC, talkgroup, source ID, vocoder PCM, and OP25 lines. A simplex channel sends no trunking control messages, so a control-channel timeout in that log is normal.</p>
       <h3>Transmit</h3>
       <p>Transmit sends the standard 1011 Hz Phase 1 test tone and latches on, the same way Receive does. Letting go does not stop it, and clicking Transmit again does not stop it. Stop is the off switch. The tone is an IMBE codeword, repeated until then. Every frame carries the NAC, talkgroup, and source ID typed here. The microphone is unused.</p>
       <p>GNU Radio takes a few seconds to start. The tone begins after the status says transmitting, and it stays until Stop. The tuner sits 50 kHz above the channel, and the tone is shifted back down, so the DC spike stays off the carrier.</p>
@@ -223,6 +282,9 @@
     function payload() {
       const body = {};
       for (const id of fields) body[id] = $(id).value;
+      body.enable_p25 = $("enable_p25").checked ? "1" : "0";
+      body.enable_fm = $("enable_fm").checked ? "1" : "0";
+      body.enable_am = $("enable_am").checked ? "1" : "0";
       return body;
     }
 
@@ -233,6 +295,16 @@
       saveTimer = setTimeout(() => {
         post("/api/settings", payload()).catch(() => {});
       }, 300);
+    }
+
+    function nacToken() {
+      return ($("nac").value || "").toUpperCase().replace(/^0X/, "").replace(/^\$/, "");
+    }
+
+    function setAnyNac(on) {
+      $("nac_any").checked = on;
+      $("nac").disabled = on;
+      if (on) $("nac").value = "F7E";
     }
 
     function showSliders() {
@@ -246,6 +318,10 @@
       if (!saved.saved) return;
       for (const id of fields) {
         if (typeof saved[id] === "string" && saved[id] !== "") $(id).value = saved[id];
+      }
+      setAnyNac(nacToken() === "F7E");
+      for (const id of ["enable_p25", "enable_fm", "enable_am"]) {
+        if (typeof saved[id] === "string") $(id).checked = saved[id] !== "0";
       }
       showSliders();
     }
@@ -422,6 +498,18 @@
       }
     }
 
+    for (const id of ["enable_p25", "enable_fm", "enable_am"]) {
+      $(id).addEventListener("change", remember);
+    }
+    $("nac_any").addEventListener("change", () => {
+      if ($("nac_any").checked) {
+        setAnyNac(true);
+      } else {
+        $("nac").disabled = false;
+        if (nacToken() === "F7E") $("nac").value = "";
+      }
+      remember();
+    });
     for (const id of fields) {
       $(id).addEventListener("input", () => {
         showSliders();
@@ -481,8 +569,46 @@
     restore().catch(() => {
       showError("Could not load saved settings.");
     }).finally(showSliders);
+    let logStick = true;
+    $("logbox").addEventListener("scroll", () => {
+      const box = $("logbox");
+      logStick = box.scrollHeight - box.scrollTop - box.clientHeight < 28;
+    });
+
+    async function pullLog() {
+      const data = await (await fetch("/api/log")).json();
+      const d = data.decode || {};
+      const parts = [];
+      if (d.mod) parts.push(String(d.mod).toUpperCase());
+      if (d.audio) parts.push("audio " + d.audio);
+      const off = [];
+      if ($("enable_p25") && !$("enable_p25").checked) off.push("P25");
+      if ($("enable_fm") && !$("enable_fm").checked) off.push("FM");
+      if ($("enable_am") && !$("enable_am").checked) off.push("AM");
+      if (off.length) parts.push("off " + off.join("/"));
+      if (d.dev_hz) parts.push("dev " + d.dev_hz + " Hz");
+      if (d.nac) parts.push("NAC " + d.nac);
+      if (d.tgid) parts.push("TG " + d.tgid);
+      if (d.src) parts.push("src " + d.src);
+      if (d.pcm_frames) parts.push("PCM " + d.pcm_frames);
+      if (d.voice) parts.push("voice");
+      if (d.timeouts) parts.push("CC timeout × " + d.timeouts);
+      $("logsum").textContent = parts.join(" · ") || "No voice frames yet. Simplex has no control channel.";
+      const box = $("logbox");
+      box.replaceChildren();
+      for (const line of data.lines || []) {
+        const row = document.createElement("div");
+        row.className = "log-" + (line.kind || "info");
+        row.textContent = line.text;
+        box.appendChild(row);
+      }
+      if (logStick) box.scrollTop = box.scrollHeight;
+    }
+
     refresh();
+    pullLog().catch(() => {});
     setInterval(refresh, 1000);
+    setInterval(() => { pullLog().catch(() => {}); }, 500);
     pollSpectrum();
     setInterval(pollSpectrum, 120);
   </script>

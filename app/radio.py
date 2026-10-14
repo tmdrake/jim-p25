@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from settings import TX_SUPERFRAMES, SettingsError
+from settings import TX_SUPERFRAMES, SettingsError, mode_enables
 
 OP25_APPS = Path(os.environ.get("OP25_APPS", "/root/op25/op25/gr-op25_repeater/apps"))
 REPO = Path(__file__).resolve().parent.parent
@@ -26,13 +26,25 @@ RX_HTTP = "127.0.0.1:18765"
 # 160 samples of 8000 Hz 16-bit audio, one IMBE voice frame.
 PCM_BYTES = 320
 PCM_PORT = 23456
+ANALOG_PORT = 23458
 # HackRF LO sits this far above the channel so the DC spike is not on the tuned frequency.
 TUNER_OFFSET_HZ = 50_000
 RX_RATE_HZ = 2_000_000
 SPEC_PORT = 23457
 
-_NAC_RE = re.compile(r"\bNAC[:\s]+(0x[0-9a-fA-F]{1,3}|\d+)\b")
-_TG_RE = re.compile(r"tgid\((\d+)\)", re.IGNORECASE)
+_NAC_RE = re.compile(r"\bnac[:\s=]+(0x[0-9a-fA-F]{1,3}|\d+)\b", re.IGNORECASE)
+_TG_RE = re.compile(r"tgid[\s:=(]+(\d+)", re.IGNORECASE)
+_SRC_RE = re.compile(r"srcaddr[\s:=(]+(\d+)", re.IGNORECASE)
+_STAMP_RE = re.compile(r"^\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+")
+_SKIP_LOG = (
+    "using avx",
+    "cpu features",
+    "built-in source",
+    "built-in sink",
+    "python version",
+    "metadata update",
+    "supported sample rates",
+)
 
 
 class RadioBusy(SettingsError):
@@ -65,11 +77,13 @@ def _tx_env(unbuffered: bool) -> dict:
 
 
 class _PcmTap:
-    """Collect the vocoder's UDP audio. Control packets are not 320 bytes."""
+    """Collect UDP s16le 8000 Hz audio. Control packets are not 320 bytes."""
 
-    def __init__(self) -> None:
+    def __init__(self, port: int = PCM_PORT) -> None:
+        self._port = port
         self._lock = threading.Lock()
         self._buf = bytearray()
+        self._frames = 0
         self._run = False
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -77,12 +91,13 @@ class _PcmTap:
     def start(self) -> None:
         self.stop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", PCM_PORT))
+        sock.bind(("127.0.0.1", self._port))
         sock.settimeout(0.4)
         self._sock = sock
         self._run = True
         with self._lock:
             self._buf.clear()
+            self._frames = 0
         thread = threading.Thread(target=self._loop, name="pcm", daemon=True)
         self._thread = thread
         thread.start()
@@ -111,9 +126,14 @@ class _PcmTap:
                 continue
             with self._lock:
                 self._buf.extend(data)
+                self._frames += 1
                 extra = len(self._buf) - 8000 * 2 * 2
                 if extra > 0:
                     del self._buf[:extra]
+
+    def frames(self) -> int:
+        with self._lock:
+            return getattr(self, "_frames", 0)
 
     def take(self) -> bytes:
         with self._lock:
@@ -186,6 +206,55 @@ def _tail(path: Path, limit: int = 65536) -> str:
     return data.decode("utf-8", "replace")
 
 
+def _last(regex: re.Pattern[str], text: str) -> str:
+    found = regex.findall(text)
+    return found[-1] if found else ""
+
+
+def parse_stack_log(text: str) -> dict:
+    """Pick NAC, talkgroup, source, and useful lines from OP25 stderr."""
+    nac = _last(_NAC_RE, text)
+    if nac and not nac.lower().startswith("0x"):
+        nac = f"0x{int(nac):03x}"
+    tgid = _last(_TG_RE, text)
+    src = _last(_SRC_RE, text)
+    timeouts = 0
+    lines: list[dict] = []
+    for raw in text.splitlines():
+        low = raw.lower()
+        if "control channel timeout" in low:
+            timeouts += 1
+            continue
+        if any(skip in low for skip in _SKIP_LOG):
+            continue
+        body = _STAMP_RE.sub("", raw).strip()
+        if not body:
+            continue
+        kind = "info"
+        if any(token in low for token in ("nac", "tgid", "srcaddr", "voice", "imbe", "duid", "ldu")):
+            kind = "voice"
+        if any(token in low for token in ("error", "fail", "uuu", "underrun")):
+            kind = "warn"
+        lines.append({"text": body[:240], "kind": kind})
+    if timeouts:
+        lines.append(
+            {
+                "text": "control channel timeout × %d (normal on simplex)" % timeouts,
+                "kind": "repeat",
+            }
+        )
+    return {
+        "lines": lines[-80:],
+        "decode": {
+            "nac": nac,
+            "tgid": tgid,
+            "src": src,
+            "voice": any(item["kind"] == "voice" for item in lines) or "voice" in text.lower(),
+            "timeouts": timeouts,
+        },
+    }
+
+
 def _stop_process(proc: subprocess.Popen | None) -> None:
     if proc is None or proc.poll() is not None:
         return
@@ -243,7 +312,7 @@ def rx_command(channel: dict, trunk_path: Path) -> list[str]:
         "-l",
         f"http:{RX_HTTP}",
         "-v",
-        "1",
+        "5",
     ]
 
 
@@ -333,8 +402,10 @@ class Radio:
         self._channel: dict | None = None
         self._message = "Idle"
         self._timer: threading.Timer | None = None
-        self._pcm = _PcmTap()
+        self._pcm = _PcmTap(PCM_PORT)
+        self._analog = _PcmTap(ANALOG_PORT)
         self._spec = _SpectrumTap()
+        self._audio_path = ""
         LOCAL.mkdir(exist_ok=True)
 
     def _hackrf_ready(self) -> str:
@@ -356,17 +427,30 @@ class Radio:
         return "missing"
 
     def _decoded(self) -> tuple[str, str]:
-        text = _tail(LOCAL / "rx.log")
-        nac = ""
-        tg = ""
-        found = _NAC_RE.findall(text)
-        if found:
-            token = found[-1]
-            nac = token if token.lower().startswith("0x") else f"0x{int(token):03x}"
-        groups = _TG_RE.findall(text)
-        if groups:
-            tg = groups[-1]
-        return nac, tg
+        parsed = parse_stack_log(_tail(LOCAL / "rx.log"))
+        decode = parsed["decode"]
+        return decode["nac"], decode["tgid"]
+
+    def stack_log(self) -> dict:
+        with self._lock:
+            mode = self._mode
+            pcm = self._pcm.frames()
+        path = LOCAL / ("tx.log" if mode == "tx" else "rx.log")
+        parsed = parse_stack_log(_tail(path, 120000))
+        parsed["mode"] = mode
+        parsed["decode"]["pcm_frames"] = pcm
+        parsed["decode"]["audio"] = self._audio_path
+        frame = self._spec.latest() or {}
+        if frame.get("mod"):
+            parsed["decode"]["mod"] = frame.get("mod")
+            parsed["decode"]["env_cv"] = frame.get("env_cv")
+            parsed["decode"]["dev_hz"] = frame.get("dev_hz")
+        if pcm and not parsed["decode"]["voice"]:
+            parsed["decode"]["voice"] = True
+            parsed["lines"].append(
+                {"text": "vocoder PCM %d frames (20 ms each) to this browser" % pcm, "kind": "voice"}
+            )
+        return parsed
 
     def status(self) -> dict:
         exited = False
@@ -383,6 +467,7 @@ class Radio:
             channel = dict(self._channel) if self._channel else None
         if exited:
             self._pcm.stop()
+            self._analog.stop()
             self._spec.stop()
         nac, tg = self._decoded() if mode == "listen" else ("", "")
         device = "busy" if mode in ("listen", "tx") else self._hackrf_ready()
@@ -404,7 +489,25 @@ class Radio:
         }
 
     def take_pcm(self) -> bytes:
-        return self._pcm.take()
+        enabled = mode_enables(LOCAL / "settings.json")
+        p25 = self._pcm.take()
+        analog = self._analog.take()
+        if p25 and enabled["p25"]:
+            self._audio_path = "p25"
+            return p25
+        spec = self._spec.latest() or {}
+        kind = spec.get("mod")
+        if analog and kind == "am" and enabled["am"]:
+            self._audio_path = "am"
+            return analog
+        if analog and kind == "fm" and enabled["fm"]:
+            self._audio_path = "fm"
+            return analog
+        if analog and kind not in ("am", "fm") and enabled["fm"]:
+            self._audio_path = "fm"
+            return analog
+        self._audio_path = ""
+        return b""
 
     def spectrum(self) -> dict:
         with self._lock:
@@ -416,6 +519,9 @@ class Radio:
             "span_hz": frame.get("span_hz", RX_RATE_HZ),
             "offset_hz": frame.get("offset_hz", TUNER_OFFSET_HZ),
             "db": frame.get("db"),
+            "mod": frame.get("mod"),
+            "env_cv": frame.get("env_cv"),
+            "dev_hz": frame.get("dev_hz"),
         }
 
     def stop(self) -> None:
@@ -432,6 +538,7 @@ class Radio:
         if timer:
             timer.cancel()
         self._pcm.stop()
+        self._analog.stop()
         self._spec.stop()
         _stop_process(proc)
 
@@ -449,9 +556,11 @@ class Radio:
             cmd = rx_command(channel, trunk)
             try:
                 self._pcm.start()
+                self._analog.start()
                 self._spec.start()
             except OSError as exc:
                 self._pcm.stop()
+                self._analog.stop()
                 self._spec.stop()
                 log.close()
                 raise SettingsError("The voice port is already in use.") from exc
@@ -471,6 +580,7 @@ class Radio:
                 )
             except Exception:
                 self._pcm.stop()
+                self._analog.stop()
                 self._spec.stop()
                 log.close()
                 raise

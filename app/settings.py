@@ -8,7 +8,19 @@ from pathlib import Path
 HACKRF_IF_GAINS = (0, 8, 16, 24, 32, 40)
 CLEAR_ALGID = 0x80
 TX_SUPERFRAMES = 70
-FORM_FIELDS = ("frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain")
+FORM_FIELDS = (
+    "frequency",
+    "nac",
+    "tgid",
+    "src",
+    "ppm",
+    "rx_gain",
+    "tx_if_gain",
+    "enable_p25",
+    "enable_fm",
+    "enable_am",
+)
+ENABLE_FIELDS = ("enable_p25", "enable_fm", "enable_am")
 
 
 class SettingsError(ValueError):
@@ -84,17 +96,31 @@ def form_from_json(data: dict) -> dict:
         raise SettingsError("Expected a JSON object.")
     form = {}
     for key in FORM_FIELDS:
-        raw = data.get(key, "")
+        default = "1" if key in ENABLE_FIELDS else ""
+        raw = data.get(key, default)
         if raw is None:
-            text = ""
-        elif isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            text = default
+        elif isinstance(raw, bool):
+            text = "1" if raw else "0"
+        elif not isinstance(raw, (str, int, float)):
             raise SettingsError("Settings must be text.")
         else:
             text = str(raw).strip()
         if len(text) > 32 or any(ord(ch) < 32 for ch in text):
             raise SettingsError("A setting is too long.")
+        if key in ENABLE_FIELDS:
+            text = "0" if text.lower() in ("0", "false", "off") else "1"
         form[key] = text
     return form
+
+
+def mode_enables(path: Path) -> dict:
+    form = load_form(path)
+    def on(key: str) -> bool:
+        if not form.get("saved"):
+            return True
+        return form.get(key, "1") != "0"
+    return {"p25": on("enable_p25"), "fm": on("enable_fm"), "am": on("enable_am")}
 
 
 def load_form(path: Path) -> dict:

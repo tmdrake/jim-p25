@@ -57,6 +57,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/spectrum":
             self._json(200, RADIO.spectrum())
             return
+        if path == "/api/log":
+            self._json(200, RADIO.stack_log())
+            return
         if path == "/api/settings":
             self._json(200, load_form(SETTINGS))
             return

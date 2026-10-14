@@ -2,7 +2,7 @@
 
 P25 Phase 1 conventional simplex tester for a HackRF One and a Motorola radio you are allowed to test.
 
-The page runs in Ubuntu on WSL2 and opens in the Windows browser. You set one frequency and the P25 network access code (NAC). Transmit latches the standard 1011 Hz Phase 1 test tone with that NAC, talkgroup, and source ID. Stop turns the tone off.
+The page runs in Ubuntu on WSL2 and opens in the Windows browser. You set one frequency and the P25 NAC. Receive latches listen. Transmit latches the 1011 Hz Phase 1 test tone. Stop turns either one off. Analog FM or AM on the same channel plays in the browser when P25 is not locked.
 
 ## The page
 
@@ -10,22 +10,23 @@ These pictures are the empty form. A frequency you type is saved on this compute
 
 ![jim-p25 controls and listening waterfall](docs/panel.png)
 
-Receive, Transmit, and Stop sit under the channel fields. The status card is next, then the waterfall. Receive turns the waterfall on. The white line is the channel. The red line is the tuner, 50 kHz higher.
+Receive, Transmit, and Stop sit under the channel fields. Checkboxes turn P25, FM, and AM detect-and-play on or off. Accept any NAC ($F7E) greys out the NAC box. The status card is next, then the waterfall, then the stack log.
 
 ![Help for the NAC, the gains, and a silent radio](docs/help.png)
 
-The Help section is the operator reference: NAC, talkgroup, source ID, PPM, both gains, the 1011 Hz test tone, and what to check when the other radio lights and stays quiet.
+The Help section is the operator reference: NAC, $F7E, talkgroup, source ID, PPM, both gains, analog vs P25 audio, the 1011 Hz test tone, and a radio that lights and stays quiet.
 
 ## Goals
 
 In scope:
 
 - One conventional Phase 1 channel. C4FM on transmit. The Phase 1 demod on listen.
-- A small page: frequency, NAC, talkgroup, source ID, clock correction (PPM), listen gain, and transmit IF gain.
+- A small page: frequency, NAC, talkgroup, source ID, clock correction (PPM), listen gain, transmit IF gain, and P25 / FM / AM enable switches.
 - Clear voice only. The algorithm ID is fixed at `0x80`. There is no key field.
 - Push-to-talk audio is the 1011 Hz IMBE test tone, so the NAC and IDs on the page are the ones in the frames. OP25’s live microphone coder hardcodes a NAC, so this page does not use the mic.
 - Half duplex. The HackRF listens or transmits, never both. Receive and Transmit each latch on until Stop. RF gain stays at 0.
 - A listening waterfall, 2 MHz wide, centered on the channel. The white line is the channel. The red line is the HackRF local oscillator, 50 kHz higher.
+- Analog FM/AM demod into the same browser audio as P25. A stack log under the waterfall shows AM vs FM, NAC, talkgroup, and vocoder PCM. Control-channel timeout is OP25’s trunk tracker; simplex has no CC.
 
 Out of scope:
 
@@ -66,9 +67,9 @@ From this folder in PowerShell:
 
 On the page, enter the frequency in MHz and the NAC in hex (`293` and `0x293` are the same). An empty talkgroup or source ID becomes 1. PPM is the HackRF clock correction in parts per million. Leave it at 0 unless the radio is slightly off the channel. At 446 MHz, 1 PPM is about 446 Hz.
 
-Receive and Transmit each latch on. A second click does not turn them off, so the few seconds GNU Radio spends starting does not get cancelled. Stop turns either one off. The browser plays received voice.
+Receive and Transmit each latch on. A second click does not turn them off, so the few seconds GNU Radio spends starting does not get cancelled. Stop turns either one off. The browser plays P25 IMBE when voice frames lock, otherwise analog FM or AM on the same frequency. Uncheck P25, FM, or AM to mute that detector. Check Accept any NAC ($F7E) to grey out the NAC box.
 
-The page stores frequency, NAC, talkgroup, source ID, PPM, and both gains in `local/settings.json` as you type, and fills them back in when you open it. Listen and transmit also write the channel files under `local/`. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
+The page stores frequency, NAC, talkgroup, source ID, PPM, both gains, and the P25/FM/AM enables in `local/settings.json` as you type, and fills them back in when you open it. Listen and transmit also write the channel files under `local/`. That folder is gitignored, along with logs. Nothing in git has a channel filled in.
 
 This stack does not run on Windows itself. On this machine it lives in WSL distro `Ubuntu-24.04`, running as root:
 
@@ -137,13 +138,14 @@ flowchart LR
     radio --> local[gitignored local/]
     browserPoll[Browser status poll] -->|GET /api/status| api
     pcmPoll[Browser audio poll] -->|GET /api/pcm| api
+    logPoll[Stack log] -->|GET /api/log| api
 ```
 
 ### Listen
 
 Listen writes one conventional row to `local/trunk.tsv` and starts `app/listen_fft.py`, which runs OP25 `rx.py` with the working directory set to the OP25 apps folder. The demod is `cqpsk`, which boatbod OP25 uses for Phase 1 C4FM as well as CQPSK. The HackRF local oscillator is 50 kHz above the channel, so its DC spike is not on the tuned frequency. The sample rate is 2 Msps. The page draws that spectrum as a waterfall: the center line is the channel, and the red line is the DC spike. The vocoder is on. Phase 2 flags are not passed.
 
-Decoded voice leaves OP25 as UDP on `127.0.0.1:23456`: 8000 Hz, 16-bit mono, 320 bytes per 20 ms voice frame. The page keeps those frames and the browser plays them. WSL has no speaker, so the ALSA player is not started. `rx.py` must not be run with Python’s unbuffered flag. Its startup calls `detach()` twice, and that crashes when stderr is already a raw file.
+Decoded P25 voice leaves OP25 as UDP on `127.0.0.1:23456`: 8000 Hz, 16-bit mono, 320 bytes per 20 ms. Analog FM or AM is demodulated from the same 2 Msps IQ and sent on `127.0.0.1:23458` in the same PCM shape. The page plays P25 when IMBE frames are present, otherwise analog. WSL has no speaker, so the ALSA player is not started. `rx.py` must not be run with Python’s unbuffered flag. Its startup calls `detach()` twice, and that crashes when stderr is already a raw file.
 
 ```mermaid
 flowchart LR
@@ -151,7 +153,9 @@ flowchart LR
     hackrf --> demod[OP25 cqpsk demod]
     demod --> frames[Phase 1 framer]
     frames --> vocoder[IMBE vocoder for algorithm 0x80]
-    vocoder -->|UDP PCM| tap[radio.py]
+    vocoder -->|UDP PCM P25| tap[radio.py]
+    iq[2 Msps IQ] --> analog[AM/FM demod]
+    analog -->|UDP PCM analog| tap
     tap -->|/api/pcm| browser[Browser Web Audio]
     frames --> log[local/rx.log]
 ```
@@ -183,8 +187,10 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 ROADMAP.md        NXDN and public AMBE+2 decode
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page
-app/index.html    the form, waterfall, help, and browser audio
-app/listen_fft.py listening spectrum, no gnuplot window
+app/index.html    the form, waterfall, stack log, help, and browser audio
+app/listen_fft.py listening spectrum, AM/FM detect, analog PCM
+app/analog.py     AM/FM demod to 8 kHz
+app/moddetect.py  AM vs FM from IQ
 app/tx_offset.py  transmit tuner 50 kHz above the channel
 app/nxdn/         NXDN48 framer we own; AMBE+2 is a wrap, not in this tree
 app/radio.py      listen and transmit processes
