@@ -1,6 +1,6 @@
 # GNU Radio Companion flowgraphs
 
-These `.grc` files are the portable NBFM stack for the HackRF One bench radio. Open them in GNU Radio Companion, or compile them on a Raspberry Pi with `grcc`. They use C++ blocks and UDP. They do not use `audio.sink`.
+These `.grc` files are the portable NBFM stack for this HackRF One bench radio. Open them in GNU Radio Companion, or compile with `grcc`. They use C++ blocks and UDP. They do not use `audio.sink`. A later Raspberry Pi project is a different effort and does not run boatbod OP25 from this bench.
 
 The live page still starts `app/nbfm_rx.py` and `app/nbfm_tx.py`. Keep those scripts and these flowgraphs in step. After you change a graph here, run `python3 grc/make_grc.py` on a GNU Radio 3.10 box that has gr-osmosdr.
 
@@ -25,21 +25,19 @@ grcc -o /tmp grc/nbfm_rx.grc
 grcc -o /tmp grc/nbfm_tx.grc
 ```
 
-## Raspberry Pi
+## Device args
 
-Install GNU Radio 3.10, gr-osmosdr, and the SDR driver (HackRF or RTL-SDR). Copy this `grc/` folder. Change the `device_args` box:
+Change the `device_args` box if the SDR is not a HackRF:
 
 - HackRF: `"hackrf"` (receive) or `"hackrf,buffers=64"` (transmit)
 - RTL-SDR receive: `"rtl=0"`
 - Soapy: `"soapy=0,driver=hackrf"`
 
-Keep RF gain at 0. Keep the 50 kHz tuner offset so the DC spike is off the channel. If USB cannot hold 2 Msps, lower `samp_rate` and keep `quad_rate` a divisor of it (40 kHz still works at 1.0e6 or 1.024e6 if you change the decimation).
+Keep RF gain at 0. Keep the 50 kHz tuner offset so the DC spike is off the channel. If USB cannot hold 2 Msps, lower `samp_rate` and keep `quad_rate` a divisor of it.
 
-Audio leaves as 8000 Hz s16le UDP, 320 bytes per 20 ms, on 23458. Point `udp_host` at the machine that will play it (this Pi, or a laptop). The jim-p25 page already speaks that socket over `/ws/pcm`.
+Audio leaves as 8000 Hz s16le UDP, 320 bytes per 20 ms, on 23458. Transmit expects the same PCM shape on 23459. `src_zeros` is on, so a silent UDP feed transmits silence instead of stalling.
 
-Transmit expects the same PCM shape on 23459. `src_zeros` is on, so a silent UDP feed transmits silence instead of stalling.
-
-Do not add an ALSA or Pulse sink. That is what broke receive on WSL, and a headless Pi has the same gap.
+Do not add an ALSA or Pulse sink.
 
 ## Rates and ports
 

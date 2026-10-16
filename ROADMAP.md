@@ -69,7 +69,7 @@ P25 Phase 1 already does the same split with IMBE: the page does not run a micro
 
 ## Later: Raspberry Pi
 
-The analog NBFM graphs are GNU Radio Companion sources in [`grc/`](grc/README.md). A Pi can open `nbfm_rx.grc` / `nbfm_tx.grc`, change `device_args`, and keep the UDP audio path. No ALSA. P25 remains boatbod OP25 on that same box if you install it.
+A Pi project is a **separate** effort. It does not carry boatbod OP25, this page, or the WSL bench. The analog graphs in [`grc/`](grc/README.md) stay here as Companion source for this HackRF bench. Reuse pieces later if that other project wants them.
 
 ## Next: NXDN around that vocoder layer
 

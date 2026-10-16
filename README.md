@@ -28,7 +28,7 @@ The bench:
 - A small page: frequency, stack fields (NAC, talkgroup, source ID), clock correction (PPM), listen gain, transmit IF gain, Listen mode, Receive / Transmit / Stop. Each of Receive and Transmit latches until Stop.
 - Browser audio over UDP plus WebSocket `/ws/pcm`. WSL has no ALSA card.
 - A 2 MHz listening waterfall centered on the channel. White line is the VFO. Yellow band is the stack’s channel width. Red line is the HackRF local oscillator.
-- A stack log under the waterfall. Companion `.grc` graphs in [`grc/`](grc/README.md) so the same bench can move to a Raspberry Pi later.
+- A stack log under the waterfall. Companion `.grc` graphs in [`grc/`](grc/README.md) are the portable NBFM source for this bench.
 
 Experimental stacks on that bench:
 
@@ -84,7 +84,7 @@ The launcher keeps Ubuntu running with a hidden `sleep infinity` before it attac
 
 ## GNU Radio
 
-The receive and transmit GNU Radio graphs, and what each block does, are in [GNU-RADIO.md](GNU-RADIO.md). Companion `.grc` sources for the NBFM pair (later Raspberry Pi work) are in [grc/](grc/README.md).
+The receive and transmit GNU Radio graphs, and what each block does, are in [GNU-RADIO.md](GNU-RADIO.md). Companion `.grc` sources for the NBFM pair are in [grc/](grc/README.md).
 
 ```mermaid
 flowchart LR
@@ -224,7 +224,7 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 
 ```
 GNU-RADIO.md      listen and transmit GNU Radio graphs
-grc/              Companion .grc flowgraphs for NBFM, Pi-ready
+grc/              Companion .grc flowgraphs for NBFM on this bench
 ROADMAP.md        NXDN and public AMBE+2 decode
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page, /ws/pcm and /ws/mic
