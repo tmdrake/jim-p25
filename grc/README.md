@@ -1,6 +1,6 @@
 # GNU Radio Companion flowgraphs
 
-These `.grc` files are the portable NBFM graphs. Open them in GNU Radio Companion, or compile them on a Raspberry Pi with `grcc`. They use C++ blocks and UDP. They do not use `audio.sink`.
+These `.grc` files are the portable NBFM stack for the HackRF One bench radio. Open them in GNU Radio Companion, or compile them on a Raspberry Pi with `grcc`. They use C++ blocks and UDP. They do not use `audio.sink`.
 
 The live page still starts `app/nbfm_rx.py` and `app/nbfm_tx.py`. Keep those scripts and these flowgraphs in step. After you change a graph here, run `python3 grc/make_grc.py` on a GNU Radio 3.10 box that has gr-osmosdr.
 

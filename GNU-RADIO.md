@@ -1,6 +1,6 @@
 # GNU Radio graphs
 
-This page is the GNU Radio inside jim-p25. The browser never talks to GNU Radio. `app/radio.py` starts one graph at a time. Sample rate is 2 Msps. RF amplifier stays off. WSL has no ALSA card, so nothing uses `audio.sink`.
+This page is the GNU Radio inside the HackRF One bench radio. Experimental stacks (P25, NBFM) are separate graphs. The browser never talks to GNU Radio. `app/radio.py` starts one graph at a time. Sample rate is 2 Msps. RF amplifier stays off. WSL has no ALSA card, so nothing uses `audio.sink`.
 
 ```mermaid
 flowchart TB

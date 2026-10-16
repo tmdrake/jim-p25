@@ -1,6 +1,8 @@
 # jim-p25
 
-P25 Phase 1 conventional simplex tester for a HackRF One and a Motorola radio you are allowed to test.
+A HackRF One bench radio you test experimental stacks against.
+
+The bench is the board, a small page, and half-duplex GNU Radio. Stacks plug in: P25 Phase 1 conventional simplex and narrowband FM today, NXDN next. Put a stock radio on the other end of the bench when a stack needs a known-good unmute check.
 
 The page runs in Ubuntu on WSL2 and opens in the Windows browser. WSL has no ALSA card. Receive and microphone audio use UDP plus a WebSocket into the tab, not `audio.sink`. Receive latches listen. Transmit latches the 1011 Hz P25 test tone or analog NBFM from the browser mic. Stop turns either one off.
 
@@ -18,29 +20,30 @@ The Help section is the operator reference: NAC, $F7E, talkgroup, source ID, PPM
 
 ## Goals
 
-In scope:
+Build a bench radio on a HackRF One, then hang experimental stacks on it and test them.
 
-- One conventional Phase 1 channel. C4FM on transmit. The Phase 1 demod on listen.
-- A small page: frequency, NAC, talkgroup, source ID, clock correction (PPM), listen gain, transmit IF gain, and a Listen mode dropdown (P25 or FM).
-- Clear voice only. The algorithm ID is fixed at `0x80`. There is no key field.
-- Push-to-talk is the 1011 Hz IMBE test tone, or analog NBFM from the browser mic. OP25’s live microphone coder hardcodes a NAC, so P25 transmit does not use the mic.
-- Half duplex. The HackRF listens or transmits, never both. Receive and Transmit each latch on until Stop. RF gain stays at 0.
-- A listening waterfall, 2 MHz wide, centered on the channel. The white line is the channel. The yellow band is the FM/P25 channel width. The red line is the HackRF local oscillator, 50 kHz higher.
-- FM receive is C++ GNU Radio (`analog.nbfm_rx` plus `network.udp_sink`) into the same browser WebSocket as P25. WSL has no ALSA card. A stack log under the waterfall shows NAC, talkgroup, and vocoder PCM. Control-channel timeout is OP25’s trunk tracker; simplex has no CC.
+The bench:
 
-Out of scope:
+- One HackRF One, half duplex, RF amplifier off. Listen or transmit, never both. 2 Msps. Tuner 50 kHz above the typed channel so the DC spike is off the voice.
+- A small page: frequency, stack fields (NAC, talkgroup, source ID), clock correction (PPM), listen gain, transmit IF gain, Listen mode, Receive / Transmit / Stop. Each of Receive and Transmit latches until Stop.
+- Browser audio over UDP plus WebSocket `/ws/pcm`. WSL has no ALSA card.
+- A 2 MHz listening waterfall centered on the channel. White line is the VFO. Yellow band is the stack’s channel width. Red line is the HackRF local oscillator.
+- A stack log under the waterfall. Companion `.grc` graphs in [`grc/`](grc/README.md) so the same bench can move to a Raspberry Pi later.
 
-- Phase 2 TDMA, trunking, and scanning.
-- Encryption, decryption, and keys.
-- Inhibit, radio-check, and other radio-disable messages.
-- Firmware flashing.
-- NXDN on this page today. Public AMBE+2 decode exists. How that becomes a GNU Radio block is in [ROADMAP.md](ROADMAP.md).
+Experimental stacks on that bench:
+
+- **P25 Phase 1 conventional simplex** (live). One C4FM channel. Clear IMBE, algorithm ID `0x80`. Transmit is the 1011 Hz test tone with the page NAC, talkgroup, and source ID. Listen is boatbod OP25 cqpsk. OP25’s live microphone coder hardcodes a NAC, so this stack does not use the mic.
+- **Narrowband FM** (live). C++ `analog.nbfm_rx` / `analog.nbfm_tx`, ±2.5 kHz Narrow or ±5 kHz Wide, UDP into the same browser audio. Microphone transmit is this stack.
+- **NXDN conventional** (next). Vocoder layer we invent, 4FSK and frames we own. Public AMBE+2 is an optional wrap. See [ROADMAP.md](ROADMAP.md).
+- Later stacks (DMR, Fusion) after NXDN receive works. This OP25 build already lists them in `dv_tx.py`.
+
+This bench stays clear-voice and conventional. No Phase 2 TDMA, trunking, scanning, encryption keys, inhibit messages, or firmware flashing.
 
 Use a frequency you are allowed to transmit on. Keep the radios close together, or put a dummy load on the HackRF.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). The vocoder is a layer we invent (silence, our test tone, optional public AMBE+2 wrap). NXDN framing and 4FSK sit around that layer. Graphs of the stack are in the roadmap.
+See [ROADMAP.md](ROADMAP.md). The HackRF bench stays put. New work is another experimental stack on it. The vocoder is a layer we invent (silence, our test tone, optional public AMBE+2 wrap). NXDN framing and 4FSK sit around that layer.
 
 ## Progress
 
@@ -119,8 +122,8 @@ flowchart LR
         radio[app/radio.py]
         op25[boatbod OP25]
     end
-    hackrf[HackRF One]
-    moto[Motorola Phase 1 radio]
+    hackrf[HackRF One bench radio]
+    other[Radio under test]
 
     launcher --> usbipd
     usbipd --> hackrf
@@ -129,7 +132,7 @@ flowchart LR
     server --> radio
     radio --> op25
     op25 <-->|USB in WSL| hackrf
-    hackrf <-.->|one Phase 1 channel| moto
+    hackrf <-.->|experimental stack on the air| other
 ```
 
 ### Launcher

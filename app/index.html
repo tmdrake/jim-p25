@@ -183,7 +183,7 @@
 <body>
   <main>
     <h1>jim-p25</h1>
-    <p>P25 Phase 1 conventional simplex. One C4FM channel. Transmit sends the 1011 Hz test tone. These fields stay on this computer.</p>
+    <p>HackRF One bench radio. Experimental stacks: P25 Phase 1 and narrowband FM. Transmit is the 1011 Hz P25 test tone or analog NBFM. These fields stay on this computer.</p>
     <div class="warn">
       Transmit turns the test tone on and leaves it on. Stop turns it off.
       The RF amplifier stays off. Use a frequency you are allowed to transmit on.
@@ -277,7 +277,7 @@
     <section class="help" aria-label="Radio help">
       <h2>Help</h2>
       <h3>Channel</h3>
-      <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
+      <p>This panel is a HackRF One bench radio. Listen mode picks an experimental stack. P25 Phase 1 is one conventional C4FM voice channel, 12.5 kHz, FDMA, a clear group call, algorithm ID 80 hex, key ID 0. Narrowband FM is the analog stack on the same board. Phase 2 TDMA, trunking, scanning, and encryption keys stay off this bench. A radio with encryption off can decode the P25 test tone with its own IMBE decoder.</p>
       <h3>Receive</h3>
       <p>Receive latches listening on. A second click does not turn it off, which avoids stopping it during the few seconds GNU Radio takes to start. Stop is the off switch. Transmit latches the same way, and it turns receive off while the tone is on.</p>
       <p>Receive audio is an RTC-style WebSocket, the reverse of the microphone path: GNU Radio UDP → /ws/pcm → AudioWorklet. No ALSA. P25 uses OP25 IMBE on 23456. FM uses analog.nbfm_rx UDP on 23458. Wide 25 kHz if you only hear a tail beep. Squelch 0.</p>

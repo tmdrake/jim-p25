@@ -1,13 +1,15 @@
 # Roadmap
 
+The goal is a **HackRF One bench radio** you test experimental stacks against. The board, the page, and half-duplex GNU Radio stay. Stacks plug in: P25 Phase 1 and narrowband FM are live; NXDN is next.
+
 This project stays on public code we write or wrap. It does not link DVSI’s closed AMBE SDK, and it does not flash radio firmware.
 
 The vocoder is a **layer we invent**. The air interface (NXDN frames, 4FSK, HackRF) talks to that layer through a small API. Implementations plug into the same slot: silence, a test tone we write, a public AMBE+2 wrap, or a vocoder we design later.
 
 ```mermaid
 flowchart TB
-    page[Page: frequency, RAN or NAC, Receive, Transmit, Stop]
-    rf[HackRF: 2 Msps, RF amp off, 50 kHz tuner offset]
+    page[Bench page: frequency, stack, Receive, Transmit, Stop]
+    rf[HackRF One bench radio: 2 Msps, RF amp off, 50 kHz offset]
     fsk[4FSK or C4FM modem]
     frame[Link frames: NXDN FS/LICH/SACCH or P25 LDU]
     voc[Vocoder layer we invent]
@@ -61,9 +63,9 @@ P25 Phase 1 already does the same split with IMBE: the page does not run a micro
 
 ## Now
 
-- Keep the page as one conventional P25 Phase 1 channel.
-- Finish the on-air test tone: Transmit must stay running, the 50 kHz tuner offset must land the carrier on the typed frequency, and a second radio must unmute.
-- Keep Receive, Transmit, and Stop latched until Stop.
+- Keep the HackRF One bench radio: one frequency, half duplex, RF amp off, Receive / Transmit / Stop latched until Stop.
+- Finish the P25 stack’s on-air test tone: Transmit must stay running, the 50 kHz tuner offset must land the carrier on the typed frequency, and a second radio must unmute.
+- Keep the NBFM stack on C++ UDP (no ALSA). Companion graphs in `grc/` are the portable copy of that stack.
 
 ## Later: Raspberry Pi
 
@@ -144,8 +146,8 @@ Receive for NXDN can ship first. Transmit waits on a dry-run symbol file, the sa
 
 - Our own MBE-style analysis/synthesis inside `vocoder.py`, still 20 ms frames.
 - DMR and Fusion after NXDN receive works. This OP25 build already lists them in `dv_tx.py`.
-- A second-radio check if the Motorola still stays quiet on P25.
-- No Phase 2 TDMA, trunking, encryption keys, or inhibit packets.
+- A second-radio check if a stock Phase 1 radio still stays quiet on the P25 stack.
+- This bench stays clear-voice and conventional: no Phase 2 TDMA, trunking, encryption keys, or inhibit packets.
 
 ## Out of this roadmap
 
