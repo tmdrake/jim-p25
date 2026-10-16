@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from settings import TX_SUPERFRAMES, SettingsError, mode_enables
+from settings import TX_SUPERFRAMES, SettingsError, listen_mode
 
 OP25_APPS = Path(os.environ.get("OP25_APPS", "/root/op25/op25/gr-op25_repeater/apps"))
 REPO = Path(__file__).resolve().parent.parent
@@ -489,23 +489,20 @@ class Radio:
         }
 
     def take_pcm(self) -> bytes:
-        enabled = mode_enables(LOCAL / "settings.json")
+        mode = listen_mode(LOCAL / "settings.json")
+        if mode == "nbfm":
+            analog = self._analog.take()
+            self._pcm.take()
+            if analog:
+                self._audio_path = "nbfm"
+                return analog
+            self._audio_path = ""
+            return b""
         p25 = self._pcm.take()
-        analog = self._analog.take()
-        if p25 and enabled["p25"]:
+        self._analog.take()
+        if p25:
             self._audio_path = "p25"
             return p25
-        spec = self._spec.latest() or {}
-        kind = spec.get("mod")
-        if analog and kind == "am" and enabled["am"]:
-            self._audio_path = "am"
-            return analog
-        if analog and kind == "fm" and enabled["fm"]:
-            self._audio_path = "fm"
-            return analog
-        if analog and kind not in ("am", "fm") and enabled["fm"]:
-            self._audio_path = "fm"
-            return analog
         self._audio_path = ""
         return b""
 

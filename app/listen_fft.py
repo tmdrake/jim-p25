@@ -21,7 +21,7 @@ import numpy as np
 
 from analog import AnalogDemod, PCM_SAMPLES, to_pcm
 from moddetect import classify_am_fm
-from settings import mode_enables
+from settings import listen_mode, sql_level
 
 SPEC_PORT = 23457
 ANALOG_PORT = 23458
@@ -32,11 +32,10 @@ _next = 0.0
 _iq = np.zeros(_IQ_LEN, dtype=np.complex64)
 _iq_pos = 0
 _last_mod = "unknown"
-_enables = {"p25": True, "fm": True, "am": True}
-_enables_at = 0.0
+_listen_mode = "p25"
+_mode_at = 0.0
 _demod: AnalogDemod | None = None
 _fm_buf = np.zeros(0, dtype=np.float32)
-_am_buf = np.zeros(0, dtype=np.float32)
 
 
 def _collect(buf: object) -> None:
@@ -138,68 +137,77 @@ def _publish(avg_pwr: np.ndarray) -> None:
 _plot = gr_gnuplot.wrap_gp.plot
 
 
-def _refresh_enables() -> dict:
-    global _enables, _enables_at
+def _refresh_mode() -> str:
+    global _listen_mode, _mode_at
     now = time.time()
-    if now - _enables_at < 0.3:
-        return _enables
-    _enables_at = now
+    if now - _mode_at < 0.3:
+        return _listen_mode
+    _mode_at = now
     try:
-        _enables = mode_enables(Path(__file__).resolve().parent.parent / "local" / "settings.json")
+        _listen_mode = listen_mode(Path(__file__).resolve().parent.parent / "local" / "settings.json")
     except Exception:
         pass
-    return _enables
+    return _listen_mode
 
 
 def _emit_audio() -> None:
-    global _fm_buf, _am_buf
-    use_am = _last_mod == "am"
-    samples = _am_buf if use_am else _fm_buf
-    while samples.size >= PCM_SAMPLES:
-        frame = samples[:PCM_SAMPLES]
-        samples = samples[PCM_SAMPLES:]
-        allowed = _refresh_enables()
-        if (_last_mod == "am" and allowed["am"]) or (_last_mod == "fm" and allowed["fm"]):
-            try:
-                _audio_sock.sendto(to_pcm(frame), ("127.0.0.1", ANALOG_PORT))
-            except OSError:
-                break
-    if use_am:
-        _am_buf = samples
-        if _fm_buf.size > 2000:
-            _fm_buf = _fm_buf[-160:]
-    else:
-        _fm_buf = samples
-        if _am_buf.size > 2000:
-            _am_buf = _am_buf[-160:]
+    global _fm_buf
+    settings = Path(__file__).resolve().parent.parent / "local" / "settings.json"
+    while _fm_buf.size >= PCM_SAMPLES:
+        frame = _fm_buf[:PCM_SAMPLES]
+        _fm_buf = _fm_buf[PCM_SAMPLES:]
+        if _refresh_mode() != "nbfm":
+            continue
+        sql = 0
+        try:
+            sql = sql_level(settings)
+        except Exception:
+            sql = 0
+        rms = float(np.sqrt(np.mean(np.square(frame)))) if frame.size else 0.0
+        # SQL 0 is open (always audio). Higher mutes hiss. Silence keeps the stream timed.
+        if sql > 0 and rms < 0.002 + (sql / 100.0) * 0.08:
+            frame = np.zeros_like(frame)
+        try:
+            _audio_sock.sendto(to_pcm(frame), ("127.0.0.1", ANALOG_PORT))
+        except OSError:
+            break
 
 
 def _analog_from(buf: object) -> None:
-    global _demod, _fm_buf, _am_buf
+    global _demod, _fm_buf
     offset = float(os.environ.get("JIM_OFFSET_HZ", "50000"))
     span = float(os.environ.get("JIM_SPAN_HZ", "2000000"))
     if _demod is None or abs(_demod.offset - offset) > 1 or abs(_demod.fs - span) > 1:
         _demod = AnalogDemod(fs=span, offset_hz=offset)
         _fm_buf = np.zeros(0, dtype=np.float32)
-        _am_buf = np.zeros(0, dtype=np.float32)
-    fm, am = _demod.process(np.asarray(buf, dtype=np.complex64))
+    fm = _demod.process(np.asarray(buf, dtype=np.complex64))
     _fm_buf = np.concatenate((_fm_buf, fm))
-    _am_buf = np.concatenate((_am_buf, am))
     _emit_audio()
 
 
 def _plot_and_send(self: object, buf: object, bufsz: int, mode: str = "eye") -> int:
     if mode == "fft":
         _collect(buf)
-        _analog_from(buf)
     consumed = _plot(self, buf, bufsz, mode)
     if mode == "fft":
         _publish(self.avg_pwr)
     return consumed
 
 
+def _fft_work(self: object, input_items: object, output_items: object) -> int:
+    """Demod every IQ sample. FFT still updates about 20 times a second."""
+    in0 = input_items[0]
+    _analog_from(in0)
+    now = time.time()
+    if now > self.next_due:
+        self.next_due = now + 0.05
+        self.gnuplot.plot(in0, 512, mode="fft")
+    return len(in0)
+
+
 gr_gnuplot.wrap_gp.attach_gp = _attach
 gr_gnuplot.wrap_gp.plot = _plot_and_send
+gr_gnuplot.fft_sink_c.work = _fft_work
 
 args = sys.argv[1:]
 if "-P" not in args and "--plot-mode" not in args:

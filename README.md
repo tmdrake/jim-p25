@@ -79,6 +79,35 @@ This stack does not run on Windows itself. On this machine it lives in WSL distr
 
 The launcher keeps Ubuntu running with a hidden `sleep infinity` before it attaches USB. usbipd cannot attach the HackRF while the distro is stopped. While the HackRF is attached to Ubuntu, Windows programs cannot open it.
 
+## GNU Radio
+
+The receive and transmit GNU Radio graphs, and what each block does, are in [GNU-RADIO.md](GNU-RADIO.md).
+
+```mermaid
+flowchart LR
+    src[osmosdr HackRF 2 Msps]
+    demod[p25_demod_cb cqpsk]
+    dec[p25_decoder IMBE]
+    fft[fft_sink_c]
+    nbfm[NBFM analog.py]
+    src --> demod --> dec
+    src --> fft
+    fft --> nbfm
+```
+
+Listen: HackRF → cqpsk demod → IMBE → UDP into the browser. The same IQ feeds the waterfall and, in Narrowband FM mode, a ±2.5 kHz discriminator.
+
+```mermaid
+flowchart LR
+    dibits[p25.dat dibits]
+    c4fm[p25_mod_bf]
+    fm[ShiftedFM rotator -50 kHz]
+    sink[osmosdr HackRF LO +50 kHz]
+    dibits --> c4fm --> fm --> sink
+```
+
+Transmit: C4FM at baseband, rotated down 50 kHz, HackRF tuned 50 kHz high, so the tone stays on the typed frequency.
+
 ## Components
 
 ```mermaid
@@ -184,6 +213,7 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 ## Layout
 
 ```
+GNU-RADIO.md      listen and transmit GNU Radio graphs
 ROADMAP.md        NXDN and public AMBE+2 decode
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page

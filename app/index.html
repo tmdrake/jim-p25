@@ -50,7 +50,7 @@
     label { display: grid; gap: 0.25rem; font-weight: 600; }
     label span { font-weight: 400; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
     .actionhelp { color: var(--muted); font-size: 0.9rem; margin: 0; }
-    input:not([type="range"]):not([type="checkbox"]) {
+    input:not([type="range"]):not([type="checkbox"]), select {
       font: inherit;
       color: var(--ink);
       padding: 0.45rem 0.55rem;
@@ -227,11 +227,18 @@
           <span class="slider"><input id="tx_if_gain" type="range" min="0" max="40" step="8" value="16"><output id="tx_if_gain_out">16</output></span>
         </label>
       </div>
-      <div class="modes">
-        <span>Detect and play</span>
-        <label class="flag"><input type="checkbox" id="enable_p25" checked> P25</label>
-        <label class="flag"><input type="checkbox" id="enable_fm" checked> FM</label>
-        <label class="flag"><input type="checkbox" id="enable_am" checked> AM</label>
+      <div class="row">
+        <label>Listen mode
+          <span>One path at a time. Narrowband FM is 12.5 kHz two-way: ±2.5 kHz deviation, 750 µs de-emphasis.</span>
+          <select id="listen_mode">
+            <option value="p25">P25 Phase 1</option>
+            <option value="nbfm">Narrowband FM</option>
+          </select>
+        </label>
+        <label>SQL
+          <span>NBFM squelch. 0 is open (you hear hiss). Raise it until the hiss stops. Unused in P25 mode.</span>
+          <span class="slider"><input id="sql" type="range" min="0" max="100" step="1" value="0"><output id="sql_out">0</output></span>
+        </label>
       </div>
       <p id="err"></p>
       <div class="actions">
@@ -257,7 +264,7 @@
       <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
       <h3>Receive</h3>
       <p>Receive latches listening on. A second click does not turn it off, which avoids stopping it during the few seconds GNU Radio takes to start. Stop is the off switch. Transmit latches the same way, and it turns receive off while the tone is on.</p>
-      <p>Receive opens the HackRF at 2 million samples per second. Phase 1 C4FM is decoded with the CQPSK demodulator and IMBE vocoder. If that path has no voice frames, analog FM or AM on the same channel is demodulated instead. Both play in this browser at 8000 Hz. The P25 / FM / AM checkboxes turn each detector and its audio on or off without stopping Receive. Leave the tab open.</p>
+      <p>Receive opens the HackRF at 2 million samples per second. Listen mode is one path: P25 Phase 1 (CQPSK + IMBE vocoder) or narrowband FM (12.5 kHz two-way discriminator, ±2.5 kHz, 750 µs de-emphasis). Both play in this browser at 8000 Hz. SQL is NBFM squelch: 0 is open. Leave the tab open.</p>
       <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
       <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The stack log under the waterfall shows AM vs FM from the IQ envelope and instantaneous frequency, plus NAC, talkgroup, source ID, vocoder PCM, and OP25 lines. A simplex channel sends no trunking control messages, so a control-channel timeout in that log is normal.</p>
       <h3>Transmit</h3>
@@ -277,14 +284,12 @@
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const fields = ["frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain"];
+    const fields = ["frequency", "nac", "tgid", "src", "ppm", "rx_gain", "tx_if_gain", "sql"];
 
     function payload() {
       const body = {};
       for (const id of fields) body[id] = $(id).value;
-      body.enable_p25 = $("enable_p25").checked ? "1" : "0";
-      body.enable_fm = $("enable_fm").checked ? "1" : "0";
-      body.enable_am = $("enable_am").checked ? "1" : "0";
+      body.listen_mode = $("listen_mode").value;
       return body;
     }
 
@@ -308,7 +313,7 @@
     }
 
     function showSliders() {
-      for (const id of ["ppm", "rx_gain", "tx_if_gain"]) {
+      for (const id of ["ppm", "rx_gain", "tx_if_gain", "sql"]) {
         $(id + "_out").textContent = $(id).value;
       }
     }
@@ -320,8 +325,8 @@
         if (typeof saved[id] === "string" && saved[id] !== "") $(id).value = saved[id];
       }
       setAnyNac(nacToken() === "F7E");
-      for (const id of ["enable_p25", "enable_fm", "enable_am"]) {
-        if (typeof saved[id] === "string") $(id).checked = saved[id] !== "0";
+      if (saved.listen_mode === "nbfm" || saved.listen_mode === "p25") {
+        $("listen_mode").value = saved.listen_mode;
       }
       showSliders();
     }
@@ -404,7 +409,7 @@
         while ($("listen").textContent === "Receiving") {
           const response = await fetch("/api/pcm");
           if (response.status === 200) playPcm(await response.arrayBuffer());
-          await new Promise((resolve) => setTimeout(resolve, 60));
+          await new Promise((resolve) => setTimeout(resolve, 20));
         }
       } finally {
         pumping = false;
@@ -498,9 +503,7 @@
       }
     }
 
-    for (const id of ["enable_p25", "enable_fm", "enable_am"]) {
-      $(id).addEventListener("change", remember);
-    }
+    $("listen_mode").addEventListener("change", remember);
     $("nac_any").addEventListener("change", () => {
       if ($("nac_any").checked) {
         setAnyNac(true);
@@ -581,11 +584,7 @@
       const parts = [];
       if (d.mod) parts.push(String(d.mod).toUpperCase());
       if (d.audio) parts.push("audio " + d.audio);
-      const off = [];
-      if ($("enable_p25") && !$("enable_p25").checked) off.push("P25");
-      if ($("enable_fm") && !$("enable_fm").checked) off.push("FM");
-      if ($("enable_am") && !$("enable_am").checked) off.push("AM");
-      if (off.length) parts.push("off " + off.join("/"));
+      if ($("listen_mode")) parts.push("mode " + $("listen_mode").value);
       if (d.dev_hz) parts.push("dev " + d.dev_hz + " Hz");
       if (d.nac) parts.push("NAC " + d.nac);
       if (d.tgid) parts.push("TG " + d.tgid);

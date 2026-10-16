@@ -16,11 +16,9 @@ FORM_FIELDS = (
     "ppm",
     "rx_gain",
     "tx_if_gain",
-    "enable_p25",
-    "enable_fm",
-    "enable_am",
+    "listen_mode",
+    "sql",
 )
-ENABLE_FIELDS = ("enable_p25", "enable_fm", "enable_am")
 
 
 class SettingsError(ValueError):
@@ -96,7 +94,7 @@ def form_from_json(data: dict) -> dict:
         raise SettingsError("Expected a JSON object.")
     form = {}
     for key in FORM_FIELDS:
-        default = "1" if key in ENABLE_FIELDS else ""
+        default = "p25" if key == "listen_mode" else ""
         raw = data.get(key, default)
         if raw is None:
             text = default
@@ -108,19 +106,35 @@ def form_from_json(data: dict) -> dict:
             text = str(raw).strip()
         if len(text) > 32 or any(ord(ch) < 32 for ch in text):
             raise SettingsError("A setting is too long.")
-        if key in ENABLE_FIELDS:
-            text = "0" if text.lower() in ("0", "false", "off") else "1"
+        if key == "listen_mode":
+            text = text.lower()
+            if text in ("fm", "nbfm"):
+                text = "nbfm"
+            else:
+                text = "p25"
+        if key == "sql":
+            try:
+                level = int(float(text or "0"))
+            except ValueError:
+                level = 0
+            text = str(max(0, min(100, level)))
         form[key] = text
     return form
 
 
-def mode_enables(path: Path) -> dict:
+def sql_level(path: Path) -> int:
     form = load_form(path)
-    def on(key: str) -> bool:
-        if not form.get("saved"):
-            return True
-        return form.get(key, "1") != "0"
-    return {"p25": on("enable_p25"), "fm": on("enable_fm"), "am": on("enable_am")}
+    try:
+        return max(0, min(100, int(float(form.get("sql") or "0"))))
+    except ValueError:
+        return 0
+
+
+def listen_mode(path: Path) -> str:
+    form = load_form(path)
+    if form.get("listen_mode") == "nbfm":
+        return "nbfm"
+    return "p25"
 
 
 def load_form(path: Path) -> dict:
