@@ -65,6 +65,10 @@ P25 Phase 1 already does the same split with IMBE: the page does not run a micro
 - Finish the on-air test tone: Transmit must stay running, the 50 kHz tuner offset must land the carrier on the typed frequency, and a second radio must unmute.
 - Keep Receive, Transmit, and Stop latched until Stop.
 
+## Later: Raspberry Pi
+
+The analog NBFM graphs are GNU Radio Companion sources in [`grc/`](grc/README.md). A Pi can open `nbfm_rx.grc` / `nbfm_tx.grc`, change `device_args`, and keep the UDP audio path. No ALSA. P25 remains boatbod OP25 on that same box if you install it.
+
 ## Next: NXDN around that vocoder layer
 
 ```mermaid

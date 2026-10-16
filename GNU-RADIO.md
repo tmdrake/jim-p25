@@ -168,3 +168,14 @@ sequenceDiagram
 P25 vocoder uses 23456. NBFM uses 23458. Mic TX is the reverse: `/ws/mic` → UDP 23459 → `nbfm_tx.py`. The first Receive click starts the AudioContext (browser rule).
 
 Python GNU Radio `sync_block.work()` on this Python 3.12 / GR 3.10 mix crashed (`SystemError` in `dictobject.c`, `IncrementalDecoder.start`) and then overflowed the HackRF (`OOOO`). FM listen therefore uses only C++ blocks: `analog.nbfm_rx`, `fft.fft_vcc`, `network.udp_sink`.
+
+## Companion flowgraphs (Raspberry Pi)
+
+The same NBFM graphs live as GNU Radio Companion sources in [`grc/`](grc/README.md):
+
+| File | Use |
+| --- | --- |
+| `grc/nbfm_rx.grc` | FM listen, UDP audio 23458, UDP FFT 23460 |
+| `grc/nbfm_tx.grc` | FM transmit from UDP 23459, 50 kHz LO offset |
+
+Open them with `gnuradio-companion`. Compile with `grcc`. On a Pi, change `device_args` (`hackrf`, `rtl=0`, or Soapy) and keep UDP. Do not add `audio.sink`. P25 still comes from boatbod OP25, not these files. Rebuild the `.grc` files with `python3 grc/make_grc.py` after GNU Radio 3.10 + gr-osmosdr is installed.

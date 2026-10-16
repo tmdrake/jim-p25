@@ -81,7 +81,7 @@ The launcher keeps Ubuntu running with a hidden `sleep infinity` before it attac
 
 ## GNU Radio
 
-The receive and transmit GNU Radio graphs, and what each block does, are in [GNU-RADIO.md](GNU-RADIO.md).
+The receive and transmit GNU Radio graphs, and what each block does, are in [GNU-RADIO.md](GNU-RADIO.md). Companion `.grc` sources for the NBFM pair (later Raspberry Pi work) are in [grc/](grc/README.md).
 
 ```mermaid
 flowchart LR
@@ -221,6 +221,7 @@ The dry check, used before the first on-air test, runs `dv_tx.py` to a float fil
 
 ```
 GNU-RADIO.md      listen and transmit GNU Radio graphs
+grc/              Companion .grc flowgraphs for NBFM, Pi-ready
 ROADMAP.md        NXDN and public AMBE+2 decode
 Start-P25.ps1     Windows launcher
 app/server.py     localhost page, /ws/pcm and /ws/mic
