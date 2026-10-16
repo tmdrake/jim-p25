@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import socket
+import struct
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -48,6 +53,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+        if path == "/ws/pcm":
+            self._pcm_socket()
+            return
+        if path == "/ws/mic":
+            self._mic_socket()
+            return
         if path == "/":
             self._send(200, INDEX.encode("utf-8"), "text/html; charset=utf-8")
             return
@@ -90,6 +101,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/settings":
                 self._json(200, save_form(SETTINGS, data))
                 return
+            if path == "/api/sql":
+                from radio import LOCAL
+                from settings import form_from_json
+                form = load_form(SETTINGS)
+                form.update(data)
+                saved = save_form(SETTINGS, form)
+                (LOCAL / "sql.live").write_text(saved.get("sql", "0") + "\n", encoding="utf-8")
+                self._json(200, {"sql": saved.get("sql", "0")})
+                return
             channel = channel_from_json(data)
             if path in ("/api/listen", "/api/tx"):
                 save_form(SETTINGS, data)
@@ -107,6 +127,121 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Not found"})
         except SettingsError as exc:
             self._json(400, {"error": str(exc)})
+
+    def _pcm_socket(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            self._json(400, {"error": "Expected a WebSocket key."})
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        conn = self.connection
+        conn.setblocking(False)
+        try:
+            while True:
+                chunk = RADIO.take_pcm()
+                if chunk:
+                    size = len(chunk)
+                    if size < 126:
+                        header = bytes((0x82, size))
+                    else:
+                        header = bytes((0x82, 126)) + struct.pack("!H", size)
+                    conn.sendall(header + chunk)
+                else:
+                    time.sleep(0.004)
+                try:
+                    incoming = conn.recv(256)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    break
+                if not incoming:
+                    break
+                if incoming[0] & 0x0F == 0x8:
+                    break
+        except OSError:
+            return
+
+    def _mic_socket(self) -> None:
+        from radio import MIC_PORT
+
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            self._json(400, {"error": "Expected a WebSocket key."})
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        conn = self.connection
+        conn.setblocking(True)
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            while True:
+                payload = _ws_read_binary(conn)
+                if payload is None:
+                    break
+                if payload:
+                    udp.sendto(payload, ("127.0.0.1", MIC_PORT))
+        except OSError:
+            return
+        finally:
+            udp.close()
+
+
+def _recvall(conn: socket.socket, count: int) -> bytes | None:
+    buf = b""
+    while len(buf) < count:
+        part = conn.recv(count - len(buf))
+        if not part:
+            return None
+        buf += part
+    return buf
+
+
+def _ws_read_binary(conn: socket.socket) -> bytes | None:
+    hdr = _recvall(conn, 2)
+    if hdr is None:
+        return None
+    opcode = hdr[0] & 0x0F
+    length = hdr[1] & 0x7F
+    masked = bool(hdr[1] & 0x80)
+    if length == 126:
+        ext = _recvall(conn, 2)
+        if ext is None:
+            return None
+        length = struct.unpack("!H", ext)[0]
+    elif length == 127:
+        ext = _recvall(conn, 8)
+        if ext is None:
+            return None
+        length = struct.unpack("!Q", ext)[0]
+    mask = b""
+    if masked:
+        got = _recvall(conn, 4)
+        if got is None:
+            return None
+        mask = got
+    data = _recvall(conn, length)
+    if data is None:
+        return None
+    if masked:
+        data = bytes(byte ^ mask[index % 4] for index, byte in enumerate(data))
+    if opcode == 0x8:
+        return None
+    if opcode != 0x2:
+        return b""
+    return data
 
 
 def main() -> None:

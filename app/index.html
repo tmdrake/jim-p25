@@ -232,14 +232,30 @@
           <span>One path at a time. Narrowband FM is 12.5 kHz two-way: ±2.5 kHz deviation, 750 µs de-emphasis.</span>
           <select id="listen_mode">
             <option value="p25">P25 Phase 1</option>
-            <option value="nbfm">Narrowband FM</option>
+            <option value="nbfm">FM (GNU Radio)</option>
           </select>
         </label>
-        <label>SQL
-          <span>NBFM squelch. 0 is open (you hear hiss). Raise it until the hiss stops. Unused in P25 mode.</span>
+        <label>FM channel
+          <span>Tail beep with no voice usually means the radio is 25 kHz / ±5 kHz. Wide opens that. Narrow is 12.5 kHz / ±2.5 kHz. Stop and Receive after changing.</span>
+          <select id="fm_width">
+            <option value="wide">Wide 25 kHz ±5 kHz</option>
+            <option value="narrow">Narrow 12.5 kHz ±2.5 kHz</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Squelch
+          <span>Live NBFM squelch. Drag while receiving. 0 is open (hiss). Raise until the hiss stops. Unused in P25 mode.</span>
           <span class="slider"><input id="sql" type="range" min="0" max="100" step="1" value="0"><output id="sql_out">0</output></span>
         </label>
       </div>
+      <label>Transmit source
+        <span>Test tone is the P25 1011 Hz IMBE vector with this page’s NAC. Microphone is analog NBFM of this browser’s mic (±2.5 kHz). P25 radios do not unmute analog FM.</span>
+        <select id="tx_source">
+          <option value="tone">P25 test tone</option>
+          <option value="mic">Microphone (NBFM)</option>
+        </select>
+      </label>
       <p id="err"></p>
       <div class="actions">
         <button type="button" id="listen" aria-pressed="false">Receive</button>
@@ -251,7 +267,7 @@
     <div id="status">Checking the HackRF…</div>
     <figure id="waterfall">
       <canvas id="wf" width="512" height="160"></canvas>
-      <figcaption id="wfcap">White line: the frequency on this page. Red line: the HackRF tuner, 50 kHz higher, where the DC spike sits while listening. A Phase 1 signal is about 12.5 kHz wide, so it is a thin trace on the white line. The trace runs only while listening.</figcaption>
+      <figcaption id="wfcap">White line: VFO center. Yellow band: channel bandwidth (12.5 or 25 kHz). Red line: HackRF LO, 50 kHz high (DC spike). The yellow band is the filter width, not the whole 2 MHz span.</figcaption>
     </figure>
     <section class="logcard" aria-label="Stack log">
       <h2>Stack log</h2>
@@ -264,7 +280,7 @@
       <p>This panel is one conventional Phase 1 voice channel. The emission is C4FM, 12.5 kHz, FDMA. Phase 2 TDMA, trunking, scanning, and encryption keys are outside this panel. The call is a group call. The voice frames are clear IMBE, algorithm ID 80 hex, key ID 0. A radio with encryption off can decode them with its own IMBE decoder.</p>
       <h3>Receive</h3>
       <p>Receive latches listening on. A second click does not turn it off, which avoids stopping it during the few seconds GNU Radio takes to start. Stop is the off switch. Transmit latches the same way, and it turns receive off while the tone is on.</p>
-      <p>Receive opens the HackRF at 2 million samples per second. Listen mode is one path: P25 Phase 1 (CQPSK + IMBE vocoder) or narrowband FM (12.5 kHz two-way discriminator, ±2.5 kHz, 750 µs de-emphasis). Both play in this browser at 8000 Hz. SQL is NBFM squelch: 0 is open. Leave the tab open.</p>
+      <p>Receive audio is an RTC-style WebSocket, the reverse of the microphone path: GNU Radio UDP → /ws/pcm → AudioWorklet. No ALSA. P25 uses OP25 IMBE on 23456. FM uses analog.nbfm_rx UDP on 23458. Wide 25 kHz if you only hear a tail beep. Squelch 0.</p>
       <p>The local oscillator is 50 kHz above the frequency you typed, so the tuner’s DC spike stays off the carrier. The waterfall is 2 MHz wide and centered on your frequency. The white line is the channel. The red line is the local oscillator. If the thin voice trace sits above the white line, raise PPM. If it sits below, lower PPM. The red line itself is the 50 kHz offset, and PPM will not move it onto the white line.</p>
       <p>Start listen gain at 16. Raise it when the waterfall stays dark and no voice decodes. Lower it when the display turns into a bright band. The stack log under the waterfall shows AM vs FM from the IQ envelope and instantaneous frequency, plus NAC, talkgroup, source ID, vocoder PCM, and OP25 lines. A simplex channel sends no trunking control messages, so a control-channel timeout in that log is normal.</p>
       <h3>Transmit</h3>
@@ -290,6 +306,8 @@
       const body = {};
       for (const id of fields) body[id] = $(id).value;
       body.listen_mode = $("listen_mode").value;
+      body.tx_source = $("tx_source").value;
+      body.fm_width = $("fm_width").value;
       return body;
     }
 
@@ -327,6 +345,12 @@
       setAnyNac(nacToken() === "F7E");
       if (saved.listen_mode === "nbfm" || saved.listen_mode === "p25") {
         $("listen_mode").value = saved.listen_mode;
+      }
+      if (saved.tx_source === "mic" || saved.tx_source === "tone") {
+        $("tx_source").value = saved.tx_source;
+      }
+      if (saved.fm_width === "narrow" || saved.fm_width === "wide") {
+        $("fm_width").value = saved.fm_width;
       }
       showSliders();
     }
@@ -379,27 +403,147 @@
     }
 
     let audioCtx = null;
-    let playAt = 0;
+    let pcmWs = null;
+    let pcmNode = null;
     let pumping = false;
+    const PCM_WORKLET = `
+class PcmPlayer extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(64000);
+    this.r = 0;
+    this.w = 0;
+    this.n = 0;
+    this.frac = 0;
+    this.primed = false;
+    this.port.onmessage = (e) => {
+      if (e.data === "reset") {
+        this.r = 0; this.w = 0; this.n = 0; this.frac = 0; this.primed = false;
+        return;
+      }
+      const x = e.data;
+      for (let i = 0; i < x.length; i += 1) {
+        this.buf[this.w] = x[i];
+        this.w = (this.w + 1) % this.buf.length;
+        if (this.n < this.buf.length) this.n += 1;
+        else this.r = (this.r + 1) % this.buf.length;
+      }
+      if (this.n >= 3200) this.primed = true;
+      if (this.n < 240) this.primed = false;
+    };
+  }
+  process(_inputs, outputs) {
+    const out = outputs[0][0];
+    const queued = this.n / 8000;
+    let rate = 0.90;
+    if (queued > 0.45) rate = 0.95;
+    if (queued > 0.80) rate = 1.00;
+    if (queued > 1.60) rate = 1.08;
+    const step = (8000 * rate) / sampleRate;
+    for (let i = 0; i < out.length; i += 1) {
+      if (!this.primed || this.n < 2) {
+        out[i] = 0;
+        continue;
+      }
+      const i1 = (this.r + 1) % this.buf.length;
+      const f = this.frac;
+      out[i] = this.buf[this.r] * (1 - f) + this.buf[i1] * f;
+      this.frac += step;
+      while (this.frac >= 1 && this.n > 1) {
+        this.frac -= 1;
+        this.r = (this.r + 1) % this.buf.length;
+        this.n -= 1;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("pcm-player", PcmPlayer);
+`;
 
     function ensureAudio() {
       if (!audioCtx) audioCtx = new AudioContext();
       if (audioCtx.state === "suspended") audioCtx.resume();
     }
 
-    function playPcm(raw) {
-      if (!audioCtx || raw.byteLength < 2) return;
-      const view = new Int16Array(raw);
-      const samples = new Float32Array(view.length);
-      for (let i = 0; i < view.length; i += 1) samples[i] = view[i] / 32768;
-      const buffer = audioCtx.createBuffer(1, samples.length, 8000);
-      buffer.copyToChannel(samples, 0);
-      const node = audioCtx.createBufferSource();
-      node.buffer = buffer;
-      node.connect(audioCtx.destination);
-      const when = Math.max(playAt, audioCtx.currentTime + 0.06);
-      node.start(when);
-      playAt = when + buffer.duration;
+    async function startAudioStream() {
+      ensureAudio();
+      if (!pcmNode && audioCtx.audioWorklet) {
+        const url = URL.createObjectURL(new Blob([PCM_WORKLET], { type: "text/javascript" }));
+        await audioCtx.audioWorklet.addModule(url);
+        pcmNode = new AudioWorkletNode(audioCtx, "pcm-player");
+        pcmNode.connect(audioCtx.destination);
+      }
+      if (pcmWs && (pcmWs.readyState === 0 || pcmWs.readyState === 1)) return;
+      const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/pcm");
+      pcmWs = ws;
+      ws.binaryType = "arraybuffer";
+      ws.onmessage = (event) => {
+        if (!pcmNode) return;
+        const view = new Int16Array(event.data);
+        const samples = new Float32Array(view.length);
+        for (let i = 0; i < view.length; i += 1) samples[i] = view[i] / 32768;
+        pcmNode.port.postMessage(samples, [samples.buffer]);
+      };
+      ws.onerror = () => { if (pcmWs === ws) pumpAudio(); };
+    }
+
+    let micWs = null;
+    let micStream = null;
+    let micProc = null;
+    let micHold = new Float32Array(0);
+
+    async function startMic() {
+      ensureAudio();
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+      });
+      const src = audioCtx.createMediaStreamSource(micStream);
+      const mute = audioCtx.createGain();
+      mute.gain.value = 0;
+      micProc = audioCtx.createScriptProcessor(4096, 1, 1);
+      micHold = new Float32Array(0);
+      micProc.onaudioprocess = (event) => {
+        if (!micWs || micWs.readyState !== 1) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const ratio = audioCtx.sampleRate / 8000;
+        const n = Math.floor(input.length / ratio);
+        const s16 = new Int16Array(n);
+        for (let i = 0; i < n; i += 1) {
+          const x = input[Math.min(input.length - 1, Math.floor(i * ratio))];
+          s16[i] = Math.max(-32767, Math.min(32767, x * 32767));
+        }
+        micWs.send(s16.buffer);
+      };
+      src.connect(micProc);
+      micProc.connect(mute);
+      mute.connect(audioCtx.destination);
+      micWs = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/mic");
+      micWs.binaryType = "arraybuffer";
+    }
+
+    function stopMic() {
+      if (micWs) {
+        micWs.close();
+        micWs = null;
+      }
+      if (micProc) {
+        micProc.disconnect();
+        micProc.onaudioprocess = null;
+        micProc = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach((track) => track.stop());
+        micStream = null;
+      }
+    }
+
+    function stopAudioStream() {
+      if (pcmWs) {
+        pcmWs.close();
+        pcmWs = null;
+      }
+      if (pcmNode) pcmNode.port.postMessage("reset");
     }
 
     async function pumpAudio() {
@@ -408,12 +552,16 @@
       try {
         while ($("listen").textContent === "Receiving") {
           const response = await fetch("/api/pcm");
-          if (response.status === 200) playPcm(await response.arrayBuffer());
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (response.status === 200 && pcmNode) {
+            const view = new Int16Array(await response.arrayBuffer());
+            const samples = new Float32Array(view.length);
+            for (let i = 0; i < view.length; i += 1) samples[i] = view[i] / 32768;
+            pcmNode.port.postMessage(samples, [samples.buffer]);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 15));
         }
       } finally {
         pumping = false;
-        playAt = 0;
       }
     }
 
@@ -458,6 +606,17 @@
       ctx.moveTo(width / 2 + 0.5, 0);
       ctx.lineTo(width / 2 + 0.5, height);
       ctx.stroke();
+      const bw = (spec && spec.bw_hz) ? spec.bw_hz : ($("fm_width") && $("fm_width").value === "narrow" ? 12500 : ($("listen_mode") && $("listen_mode").value === "p25" ? 12500 : 25000));
+      const half = (bw / span) * width / 2;
+      ctx.fillStyle = "rgba(250, 204, 21, 0.18)";
+      ctx.fillRect(width / 2 - half, 0, half * 2, height);
+      ctx.strokeStyle = "rgba(250, 204, 21, 0.9)";
+      ctx.beginPath();
+      ctx.moveTo(width / 2 - half + 0.5, 0);
+      ctx.lineTo(width / 2 - half + 0.5, height);
+      ctx.moveTo(width / 2 + half + 0.5, 0);
+      ctx.lineTo(width / 2 + half + 0.5, height);
+      ctx.stroke();
       const dc = width / 2 + (offset / span) * width;
       ctx.strokeStyle = "rgba(255,70,70,0.95)";
       ctx.beginPath();
@@ -497,13 +656,16 @@
       try {
         const status = await (await fetch("/api/status")).json();
         paint(status);
-        if (status.mode === "listen" && audioCtx) pumpAudio();
+        if (status.mode !== "listen") stopAudioStream();
+        else if (audioCtx && (!pcmWs || pcmWs.readyState > 1)) pumpAudio();
       } catch (err) {
         $("status").textContent = "Page lost the radio process.";
       }
     }
 
     $("listen_mode").addEventListener("change", remember);
+    $("tx_source").addEventListener("change", remember);
+    $("fm_width").addEventListener("change", remember);
     $("nac_any").addEventListener("change", () => {
       if ($("nac_any").checked) {
         setAnyNac(true);
@@ -516,6 +678,14 @@
     for (const id of fields) {
       $(id).addEventListener("input", () => {
         showSliders();
+        if (id === "sql") {
+          fetch("/api/sql", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sql: $("sql").value })
+          }).catch(() => {});
+          return;
+        }
         remember();
       });
     }
@@ -533,8 +703,9 @@
       try {
         ensureAudio();
         paint(await post("/api/listen", payload()));
-        pumpAudio();
+        await startAudioStream();
       } catch (err) {
+        stopAudioStream();
         showError(err.message);
         try { paint(await (await fetch("/api/status")).json()); } catch (ignore) {}
       } finally {
@@ -549,8 +720,10 @@
       $("ptt").textContent = "Transmitting";
       $("ptt").classList.add("on");
       try {
+        if ($("tx_source").value === "mic") await startMic();
         paint(await post("/api/tx", payload()));
       } catch (err) {
+        stopMic();
         showError(err.message);
         try { paint(await (await fetch("/api/status")).json()); } catch (ignore) {}
       } finally {
@@ -560,6 +733,8 @@
 
     $("stop").addEventListener("click", async () => {
       showError("");
+      stopAudioStream();
+      stopMic();
       try {
         paint(await post("/api/stop"));
       } catch (err) {
@@ -590,9 +765,12 @@
       if (d.tgid) parts.push("TG " + d.tgid);
       if (d.src) parts.push("src " + d.src);
       if (d.pcm_frames) parts.push("PCM " + d.pcm_frames);
+      if (d.rtc_frames) parts.push("RTC " + d.rtc_frames);
       if (d.voice) parts.push("voice");
-      if (d.timeouts) parts.push("CC timeout × " + d.timeouts);
-      $("logsum").textContent = parts.join(" · ") || "No voice frames yet. Simplex has no control channel.";
+      if (d.timeouts && $("listen_mode") && $("listen_mode").value === "p25") {
+        parts.push("CC timeout × " + d.timeouts);
+      }
+      $("logsum").textContent = parts.join(" · ") || ($("listen_mode") && $("listen_mode").value === "nbfm" ? "FM via GNU Radio Pulse. No P25 control channel." : "No voice frames yet.");
       const box = $("logbox");
       box.replaceChildren();
       for (const line of data.lines || []) {

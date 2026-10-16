@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -36,6 +38,7 @@ _listen_mode = "p25"
 _mode_at = 0.0
 _demod: AnalogDemod | None = None
 _fm_buf = np.zeros(0, dtype=np.float32)
+_iq_q: queue.Queue = queue.Queue(maxsize=4)
 
 
 def _collect(buf: object) -> None:
@@ -160,7 +163,11 @@ def _emit_audio() -> None:
             continue
         sql = 0
         try:
-            sql = sql_level(settings)
+            live = settings.parent / "sql.live"
+            if live.is_file():
+                sql = max(0, min(100, int(float(live.read_text().strip() or "0"))))
+            else:
+                sql = sql_level(settings)
         except Exception:
             sql = 0
         rms = float(np.sqrt(np.mean(np.square(frame)))) if frame.size else 0.0
@@ -195,14 +202,36 @@ def _plot_and_send(self: object, buf: object, bufsz: int, mode: str = "eye") -> 
 
 
 def _fft_work(self: object, input_items: object, output_items: object) -> int:
-    """Demod every IQ sample. FFT still updates about 20 times a second."""
-    in0 = input_items[0]
-    _analog_from(in0)
+    """Copy IQ out of the graph. NBFM runs on a side thread so work stays short."""
+    in0 = np.array(input_items[0], copy=True)
+    try:
+        _iq_q.put_nowait(in0)
+    except queue.Full:
+        try:
+            _iq_q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            _iq_q.put_nowait(in0)
+        except queue.Full:
+            pass
     now = time.time()
     if now > self.next_due:
         self.next_due = now + 0.05
         self.gnuplot.plot(in0, 512, mode="fft")
     return len(in0)
+
+
+def _demod_loop() -> None:
+    while True:
+        buf = _iq_q.get()
+        try:
+            _analog_from(buf)
+        except Exception:
+            continue
+
+
+threading.Thread(target=_demod_loop, name="nbfm", daemon=True).start()
 
 
 gr_gnuplot.wrap_gp.attach_gp = _attach

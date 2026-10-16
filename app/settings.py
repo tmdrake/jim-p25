@@ -18,6 +18,8 @@ FORM_FIELDS = (
     "tx_if_gain",
     "listen_mode",
     "sql",
+    "tx_source",
+    "fm_width",
 )
 
 
@@ -94,7 +96,12 @@ def form_from_json(data: dict) -> dict:
         raise SettingsError("Expected a JSON object.")
     form = {}
     for key in FORM_FIELDS:
-        default = "p25" if key == "listen_mode" else ""
+        default = (
+            "p25" if key == "listen_mode"
+            else "tone" if key == "tx_source"
+            else "wide" if key == "fm_width"
+            else ""
+        )
         raw = data.get(key, default)
         if raw is None:
             text = default
@@ -112,6 +119,10 @@ def form_from_json(data: dict) -> dict:
                 text = "nbfm"
             else:
                 text = "p25"
+        if key == "tx_source":
+            text = "mic" if text.lower() in ("mic", "microphone", "audio") else "tone"
+        if key == "fm_width":
+            text = "wide" if text.lower() in ("wide", "25", "5k") else "narrow"
         if key == "sql":
             try:
                 level = int(float(text or "0"))
@@ -135,6 +146,20 @@ def listen_mode(path: Path) -> str:
     if form.get("listen_mode") == "nbfm":
         return "nbfm"
     return "p25"
+
+
+def fm_wide(path: Path) -> bool:
+    form = load_form(path)
+    if not form.get("saved"):
+        return True
+    return form.get("fm_width", "wide") != "narrow"
+
+
+def tx_source(path: Path) -> str:
+    form = load_form(path)
+    if form.get("tx_source") == "mic":
+        return "mic"
+    return "tone"
 
 
 def load_form(path: Path) -> dict:

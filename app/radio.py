@@ -8,16 +8,18 @@ source ID from the page. Algorithm ID is fixed at 0x80 (clear).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
 import socket
+import struct
 import subprocess
 import threading
 import time
 from pathlib import Path
 
-from settings import TX_SUPERFRAMES, SettingsError, listen_mode
+from settings import TX_SUPERFRAMES, SettingsError, listen_mode, tx_source, fm_wide
 
 OP25_APPS = Path(os.environ.get("OP25_APPS", "/root/op25/op25/gr-op25_repeater/apps"))
 REPO = Path(__file__).resolve().parent.parent
@@ -27,10 +29,13 @@ RX_HTTP = "127.0.0.1:18765"
 PCM_BYTES = 320
 PCM_PORT = 23456
 ANALOG_PORT = 23458
+MIC_PORT = 23459
 # HackRF LO sits this far above the channel so the DC spike is not on the tuned frequency.
 TUNER_OFFSET_HZ = 50_000
 RX_RATE_HZ = 2_000_000
 SPEC_PORT = 23457
+SPEC_BIN_PORT = 23460
+FFT_BINS = 512
 
 _NAC_RE = re.compile(r"\bnac[:\s=]+(0x[0-9a-fA-F]{1,3}|\d+)\b", re.IGNORECASE)
 _TG_RE = re.compile(r"tgid[\s:=(]+(\d+)", re.IGNORECASE)
@@ -122,7 +127,7 @@ class _PcmTap:
                 data, _addr = sock.recvfrom(4096)
             except (socket.timeout, OSError):
                 continue
-            if len(data) != PCM_BYTES:
+            if len(data) < 2 or len(data) % 2:
                 continue
             with self._lock:
                 self._buf.extend(data)
@@ -137,8 +142,10 @@ class _PcmTap:
 
     def take(self) -> bytes:
         with self._lock:
-            data = bytes(self._buf)
-            self._buf.clear()
+            if len(self._buf) < PCM_BYTES:
+                return b""
+            data = bytes(self._buf[:PCM_BYTES])
+            del self._buf[:PCM_BYTES]
             return data
 
 
@@ -191,6 +198,78 @@ class _SpectrumTap:
                 continue
             with self._lock:
                 self._frame = frame
+
+    def latest(self) -> dict | None:
+        with self._lock:
+            if self._frame is None:
+                return None
+            return dict(self._frame)
+
+
+class _SpecBinTap:
+    """C++ FFT dump: 512 float32 dB bins, no Python in the GNU Radio graph."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._frame: dict | None = None
+        self._run = False
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.stop()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", SPEC_BIN_PORT))
+        sock.settimeout(0.4)
+        self._sock = sock
+        self._run = True
+        with self._lock:
+            self._frame = None
+        thread = threading.Thread(target=self._loop, name="spec-bin", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        self._run = False
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            sock.close()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+
+    def _loop(self) -> None:
+        sock = self._sock
+        nbytes = FFT_BINS * 4
+        while self._run and sock is not None:
+            try:
+                data, _addr = sock.recvfrom(65535)
+            except (socket.timeout, OSError):
+                continue
+            if len(data) < nbytes:
+                continue
+            db = struct.unpack("<%df" % FFT_BINS, data[:nbytes])
+            ordered = list(db)
+            lo = sorted(ordered)[max(0, int(0.10 * FFT_BINS) - 1)]
+            hi = sorted(ordered)[min(FFT_BINS - 1, int(0.995 * FFT_BINS))]
+            if hi - lo < 6:
+                hi = lo + 6
+            scaled = [int(max(0, min(255, (v - lo) / (hi - lo) * 255))) for v in ordered]
+            shift = int(round(TUNER_OFFSET_HZ / (RX_RATE_HZ / FFT_BINS)))
+            centered = [scaled[int(0.2 * FFT_BINS)]] * FFT_BINS
+            if 0 < shift < FFT_BINS:
+                centered[shift:] = scaled[: FFT_BINS - shift]
+            else:
+                centered = scaled
+            with self._lock:
+                self._frame = {
+                    "tuned_hz": None,
+                    "span_hz": RX_RATE_HZ,
+                    "offset_hz": TUNER_OFFSET_HZ,
+                    "db": centered,
+                }
 
     def latest(self) -> dict | None:
         with self._lock:
@@ -316,6 +395,22 @@ def rx_command(channel: dict, trunk_path: Path) -> list[str]:
     ]
 
 
+def nbfm_rx_command(channel: dict) -> list[str]:
+    cmd = [
+        "python3",
+        str(REPO / "app" / "nbfm_rx.py"),
+        "-Q",
+        str(channel["frequency_hz"]),
+        "-q",
+        str(channel["ppm"]),
+        "-N",
+        f"RF:0,IF:{channel['rx_gain']}",
+    ]
+    if fm_wide(LOCAL / "settings.json"):
+        cmd.append("--wide")
+    return cmd
+
+
 def craft_command(channel: dict, out_path: Path) -> list[str]:
     return [
         "python3",
@@ -393,6 +488,19 @@ def tx_command(channel: dict, symbols: Path, iq_path: Path | None) -> list[str]:
     return cmd
 
 
+def nbfm_tx_command(channel: dict) -> list[str]:
+    return [
+        "python3",
+        str(REPO / "app" / "nbfm_tx.py"),
+        "-Q",
+        str(channel["frequency_hz"]),
+        "-q",
+        str(channel["ppm"]),
+        "-N",
+        f"RF:0,IF:{channel['tx_if_gain']}",
+    ]
+
+
 class Radio:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -405,6 +513,7 @@ class Radio:
         self._pcm = _PcmTap(PCM_PORT)
         self._analog = _PcmTap(ANALOG_PORT)
         self._spec = _SpectrumTap()
+        self._spec_bin = _SpecBinTap()
         self._audio_path = ""
         LOCAL.mkdir(exist_ok=True)
 
@@ -437,8 +546,12 @@ class Radio:
             pcm = self._pcm.frames()
         path = LOCAL / ("tx.log" if mode == "tx" else "rx.log")
         parsed = parse_stack_log(_tail(path, 120000))
+        if listen_mode(LOCAL / "settings.json") == "nbfm":
+            parsed["lines"] = [row for row in parsed["lines"] if row.get("kind") != "repeat"]
+            parsed["decode"]["timeouts"] = 0
         parsed["mode"] = mode
         parsed["decode"]["pcm_frames"] = pcm
+        parsed["decode"]["rtc_frames"] = self._analog.frames()
         parsed["decode"]["audio"] = self._audio_path
         frame = self._spec.latest() or {}
         if frame.get("mod"):
@@ -469,6 +582,7 @@ class Radio:
             self._pcm.stop()
             self._analog.stop()
             self._spec.stop()
+        self._spec_bin.stop()
         nac, tg = self._decoded() if mode == "listen" else ("", "")
         device = "busy" if mode in ("listen", "tx") else self._hackrf_ready()
         view = None
@@ -510,6 +624,14 @@ class Radio:
         with self._lock:
             listening = self._mode == "listen"
         frame = self._spec.latest() or {}
+        bins = self._spec_bin.latest() or {}
+        if bins.get("db"):
+            with self._lock:
+                channel = self._channel
+            if channel:
+                bins["tuned_hz"] = channel["frequency_hz"]
+            bins["bw_hz"] = 25_000 if fm_wide(LOCAL / "settings.json") else 12_500
+            frame = bins
         return {
             "listening": listening,
             "tuned_hz": frame.get("tuned_hz"),
@@ -519,6 +641,7 @@ class Radio:
             "mod": frame.get("mod"),
             "env_cv": frame.get("env_cv"),
             "dev_hz": frame.get("dev_hz"),
+            "bw_hz": frame.get("bw_hz"),
         }
 
     def stop(self) -> None:
@@ -537,6 +660,7 @@ class Radio:
         self._pcm.stop()
         self._analog.stop()
         self._spec.stop()
+        self._spec_bin.stop()
         _stop_process(proc)
 
     def listen(self, channel: dict) -> None:
@@ -550,15 +674,18 @@ class Radio:
             trunk = LOCAL / "trunk.tsv"
             write_trunk(channel, trunk)
             log = open(LOCAL / "rx.log", "w", encoding="utf-8")
-            cmd = rx_command(channel, trunk)
+            nbfm = listen_mode(LOCAL / "settings.json") == "nbfm"
+            cmd = nbfm_rx_command(channel) if nbfm else rx_command(channel, trunk)
             try:
                 self._pcm.start()
                 self._analog.start()
                 self._spec.start()
+                self._spec_bin.start()
             except OSError as exc:
                 self._pcm.stop()
                 self._analog.stop()
                 self._spec.stop()
+                self._spec_bin.stop()
                 log.close()
                 raise SettingsError("The voice port is already in use.") from exc
             env = _env()
@@ -568,7 +695,7 @@ class Radio:
             try:
                 proc = subprocess.Popen(
                     cmd,
-                    cwd=str(OP25_APPS),
+                    cwd=str(REPO / "app") if nbfm else str(OP25_APPS),
                     env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
@@ -579,15 +706,22 @@ class Radio:
                 self._pcm.stop()
                 self._analog.stop()
                 self._spec.stop()
+                self._spec_bin.stop()
                 log.close()
                 raise
             self._proc = proc
             self._mode = "listen"
             self._channel = channel
-            self._message = (
-                f"Listening on {channel['frequency_mhz']} MHz. "
-                "Voice plays in this browser."
-            )
+            if nbfm:
+                self._message = (
+                    f"NBFM on {channel['frequency_mhz']} MHz. "
+                    "Audio plays in this browser (UDP). Pulse is used only if it opens."
+                )
+            else:
+                self._message = (
+                    f"Listening on {channel['frequency_mhz']} MHz. "
+                    "P25 voice plays in this browser."
+                )
             log.close()
 
     def _build_symbols(self, channel: dict) -> Path:
@@ -618,7 +752,51 @@ class Radio:
             raise SettingsError(detail[-500:])
         return symbols
 
+    def _transmit_mic(self, channel: dict) -> dict:
+        with self._lock:
+            if self._mode == "tx":
+                raise RadioBusy("Already transmitting.")
+            resume = self._mode == "listen"
+            proc = self._proc
+            self._proc = None
+            self._mode = "idle"
+        _stop_process(proc)
+        with self._lock:
+            log = open(LOCAL / "tx.log", "w", encoding="utf-8")
+            started = subprocess.Popen(
+                nbfm_tx_command(channel),
+                cwd=str(REPO / "app"),
+                env=_tx_env(unbuffered=True),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self._proc = started
+            self._mode = "tx"
+            self._channel = channel
+            self._resume_listen = resume
+            self._message = (
+                f"Transmitting microphone as NBFM on {channel['frequency_mhz']} MHz. "
+                "This is analog two-way FM, not P25. Press Stop to end it."
+            )
+            log.close()
+        time.sleep(0.8)
+        if started.poll() is not None:
+            with self._lock:
+                self._proc = None
+                self._mode = "idle"
+                self._resume_listen = False
+                self._message = "Transmit stopped."
+            detail = (LOCAL / "tx.log").read_text(encoding="utf-8", errors="replace").strip()
+            raise SettingsError(detail[-500:] or "Microphone transmit exited.")
+        return {"ok": True, "mode": "nbfm"}
+
     def transmit(self, channel: dict, dry_run: bool = False) -> dict:
+        if tx_source(LOCAL / "settings.json") == "mic":
+            if dry_run:
+                raise SettingsError("Microphone transmit has no file dry-run.")
+            return self._transmit_mic(channel)
         if not (OP25_APPS / "tx" / "dv_tx.py").exists():
             raise SettingsError("OP25 is not installed yet.")
         symbols = self._build_symbols(channel)

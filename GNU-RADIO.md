@@ -1,18 +1,22 @@
 # GNU Radio graphs
 
-This page is the GNU Radio inside jim-p25. The browser never talks to GNU Radio. `app/radio.py` starts two flowgraphs, never both: listen (`app/listen_fft.py` → boatbod `rx.py`) or transmit (`app/tx_offset.py` → `dv_tx.py`). Sample rate is 2 Msps. RF amplifier stays off.
+This page is the GNU Radio inside jim-p25. The browser never talks to GNU Radio. `app/radio.py` starts one graph at a time. Sample rate is 2 Msps. RF amplifier stays off. WSL has no ALSA card, so nothing uses `audio.sink`.
 
 ```mermaid
 flowchart TB
     page[Browser 127.0.0.1:8765]
     server[app/server.py]
     radio[app/radio.py]
-    page -->|HTTP| server
+    page -->|HTTP and WebSocket /ws/pcm /ws/mic| server
     server --> radio
-    radio -->|Receive| rx[listen_fft.py plus rx.py]
-    radio -->|Transmit| tx[tx_offset.py plus dv_tx.py]
+    radio -->|P25 Receive| rx[listen_fft.py plus rx.py]
+    radio -->|FM Receive| nbfm[nbfm_rx.py C++ UDP]
+    radio -->|P25 Transmit| tx[tx_offset.py plus dv_tx.py]
+    radio -->|Mic Transmit| ntx[nbfm_tx.py]
     rx <--> hackrf[osmosdr HackRF]
+    nbfm <--> hackrf
     tx --> hackrf
+    ntx --> hackrf
 ```
 
 Half duplex: one HackRF, one graph at a time. Stop kills the child.
@@ -56,20 +60,20 @@ The FFT tap is `demod.connect_complex('src', fft_sink)`: the same 2 Msps IQ the 
 | **p25_decoder_sink_b** | P25 Phase 1 framer. NAC must match, or the page NAC is F7E. Clear IMBE (`do_imbe`) becomes 8000 Hz PCM. Encrypted frames stay silent. `-w` sends PCM as UDP, 320 bytes per 20 ms. |
 | **trunking.rx_ctl** | Reads `local/trunk.tsv`. One conventional row, modulation `cqpsk`. On simplex there are no TSBKs, so it prints control channel timeout. Voice on the tuned frequency still decodes. |
 | **fft_sink_c** | GNU Radio consumes every IQ sample. A 512-bin FFT is published about 20 times a second for the waterfall. The center bin is the typed frequency after `listen_fft.py` rolls the row. |
-| **analog.py NBFM** | Runs on **every** IQ sample in `fft_sink_c.work`, not on the 20 Hz FFT slice. Mixes +50 kHz to put the channel at DC, boxcar-decimates to 16 kHz (about a 12.5 kHz channel), FM discriminator scaled to ±2.5 kHz, 750 µs de-emphasis, 300 Hz high-pass, 8 kHz PCM. SQL 0 is open. Closed SQL sends silence so the stream stays in time. |
+| **analog.py NBFM** | Leftover Python discriminator on the P25 FFT graph. Live FM listen uses `nbfm_rx.py` instead. |
 
-Listen mode on the page is one path:
+Listen mode on the page picks the graph:
 
 ```mermaid
 flowchart TD
     mode{Listen mode}
-    mode -->|P25 Phase 1| p25[Play UDP 23456 IMBE]
-    mode -->|Narrowband FM| nbfm[Play UDP 23458 discriminator]
-    p25 --> browser[Browser Web Audio 8000 Hz]
+    mode -->|P25 Phase 1| p25[listen_fft.py plus rx.py<br/>UDP 23456 IMBE]
+    mode -->|FM| nbfm[nbfm_rx.py C++ analog.nbfm_rx<br/>UDP 23458 audio, UDP 23460 FFT]
+    p25 --> browser[WebSocket /ws/pcm]
     nbfm --> browser
 ```
 
-`radio.py` polls `/api/pcm` from the port that matches the dropdown. The waterfall and AM/FM classifier still run from the FFT IQ in both modes.
+The page plays `/ws/pcm` into an AudioWorklet. P25 waterfall JSON stays on 23457. FM waterfall bins are C++ floats on 23460.
 
 ## Transmit graph
 
@@ -119,21 +123,48 @@ flowchart LR
 
 GNU Radio takes a few seconds to start. The page latches Transmit until Stop. Underruns print `U` (one USB buffer of zeros).
 
+## FM listen graph (no ALSA)
+
+Python GNU Radio `work()` blocks crashed this Python 3.12 / GR 3.10 mix (`SystemError` in `dictobject.c`, then HackRF `OOOO`). FM receive is C++ only:
+
+```mermaid
+flowchart LR
+    src[osmosdr.source 2 Msps<br/>LO = channel + 50 kHz]
+    xlat[freq_xlating_fir<br/>channel to DC]
+    sql[simple_squelch_cc]
+    demod[analog.nbfm_rx<br/>8 kHz, ±2.5 or ±5 kHz]
+    f2s[float_to_short]
+    aud[network.udp_sink<br/>127.0.0.1:23458]
+    skip[keep_one_in_n]
+    fft[fft_vcc 512]
+    mag[complex_to_mag_squared]
+    logp[nlog10_ff]
+    spec[network.udp_sink<br/>127.0.0.1:23460]
+    src --> xlat --> sql --> demod --> f2s --> aud
+    src --> skip --> fft --> mag --> logp --> spec
+```
+
+`radio.py` unpacks 512 float bins on 23460 for the waterfall. Audio is 20 ms s16le on 23458, then `/ws/pcm` into the AudioWorklet. That is the RTC-style path (same idea as the mic socket, reverse direction).
+
+The VM can carry 2 Msps. Overruns were the scheduler stuck in a crashing Python block, not a weak WSL box.
+
 ## Audio into the browser
 
 Neither graph has an ALSA sink. WSL has no card.
 
 ```mermaid
 sequenceDiagram
-    participant GR as GNU Radio
+    participant GR as GNU Radio C++
     participant UDP as 127.0.0.1
     participant Tap as radio.py PCM tap
     participant Page as Browser
-    GR->>UDP: 320-byte s16le every 20 ms
+    GR->>UDP: s16le PCM
     Tap->>UDP: bind 23456 or 23458
-    Page->>Tap: GET /api/pcm
-    Tap-->>Page: octet-stream
-    Page->>Page: AudioContext 8000 Hz
+    Page->>Tap: WebSocket /ws/pcm
+    Tap-->>Page: binary 20 ms frames
+    Page->>Page: AudioWorklet 8000 Hz
 ```
 
-P25 vocoder uses 23456. NBFM uses 23458. The first Receive click starts the AudioContext (browser rule).
+P25 vocoder uses 23456. NBFM uses 23458. Mic TX is the reverse: `/ws/mic` → UDP 23459 → `nbfm_tx.py`. The first Receive click starts the AudioContext (browser rule).
+
+Python GNU Radio `sync_block.work()` on this Python 3.12 / GR 3.10 mix crashed (`SystemError` in `dictobject.c`, `IncrementalDecoder.start`) and then overflowed the HackRF (`OOOO`). FM listen therefore uses only C++ blocks: `analog.nbfm_rx`, `fft.fft_vcc`, `network.udp_sink`.
